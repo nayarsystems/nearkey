@@ -55,7 +55,7 @@ static uint8_t raw_adv_data[] = {
 };
 
 static uint8_t* adv_uuid = &raw_adv_data[5];
-// static uint8_t* adv_key_counter = &raw_adv_data[23];
+static uint8_t* adv_key_counter = &raw_adv_data[23];
 
 static uint8_t raw_scan_rsp_data[] = {0x02, // Flags field size
                                       0x01, // Flags
@@ -256,6 +256,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         if(gatts_disconnect_cb != NULL) {
             gatts_disconnect_cb(param->connect.remote_bda);
         }
+        bufio_discard_all(&conn_cmd_buff);
+        bufio_discard_all(&conn_res_buff);
         esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GATTS_OPEN_EVT:
@@ -295,12 +297,18 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while(0);
 }
 
-int init_gatts(gatts_connect_cb_t conn_cb, gatts_disconnect_cb_t disconn_cb, gatts_cmd_cb_t cmd_cb) {
+int init_gatts(gatts_connect_cb_t conn_cb,
+               gatts_disconnect_cb_t disconn_cb,
+               gatts_cmd_cb_t cmd_cb,
+               uint32_t key_counter,
+               uint8_t* id) {
     esp_err_t ret;
 
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
     gatts_cmd_cb = cmd_cb;
+    memcpy(adv_key_counter, &key_counter, sizeof(key_counter));
+    memcpy(adv_uuid, id, 6);
     bufio_init(&conn_cmd_buff, CMD_BUFF_SIZE);
     bufio_init(&conn_res_buff, RES_BUFF_SIZE);
 

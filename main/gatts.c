@@ -176,8 +176,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         int len = bufio_used(&conn_res_buff);
-        if(len > 32) {
-            len = 32;
+        if(len > 22) {
+            len = 22;
         }
         rsp.attr_value.len = len;
         memcpy(&rsp.attr_value.value[0], bufio_tail(&conn_res_buff), len);
@@ -199,11 +199,24 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             }
             bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
-
-        esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        if(param->write.is_prep) {
+            memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+            rsp.attr_value.handle = param->write.handle;
+            memcpy(rsp.attr_value.value, param->write.value, param->write.len);
+            rsp.attr_value.len = param->write.len;
+            rsp.attr_value.offset = param->write.len;
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
+        } else {
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        }
         break;
     }
     case ESP_GATTS_EXEC_WRITE_EVT:
+        ESP_LOGI(LOG_TAG, "GATT_EXEC_WRITE_EVT, conn_id %d, trans_id %d\n", param->exec_write.conn_id,
+                 param->exec_write.trans_id);
+
+        esp_ble_gatts_send_response(gatts_if, param->exec_write.conn_id, param->exec_write.trans_id, ESP_GATT_OK, NULL);
+        break;
     case ESP_GATTS_MTU_EVT:
     case ESP_GATTS_CONF_EVT:
     case ESP_GATTS_UNREG_EVT:

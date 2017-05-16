@@ -154,6 +154,8 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 
 static void
 gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t* param) {
+    static esp_gatt_rsp_t rsp;
+
     switch(event) {
     case ESP_GATTS_REG_EVT: {
         ESP_LOGI(LOG_TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
@@ -171,7 +173,6 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_READ_EVT: {
         ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d\n", param->read.conn_id,
                  param->read.trans_id, param->read.handle);
-        esp_gatt_rsp_t rsp;
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         int len = bufio_used(&conn_res_buff);
@@ -191,11 +192,12 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         bufio_push_bytes(&conn_cmd_buff, param->write.value, param->write.len);
         char* end_cmd = strchr(bufio_tail(&conn_cmd_buff), 10); // Search for "\n"
         if(end_cmd != NULL) {
-            size_t cmd_size = end_cmd - (char*)bufio_tail(&conn_cmd_buff) + 1;
+            *end_cmd = '\0';
+            size_t cmd_size = strlen((char*)bufio_tail(&conn_cmd_buff));
             if(gatts_cmd_cb != NULL) {
                 gatts_cmd_cb(bufio_tail(&conn_cmd_buff), cmd_size);
             }
-            bufio_discard(&conn_cmd_buff, cmd_size);
+            bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
 
         esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);

@@ -364,5 +364,8 @@ esp_err_t gatts_close_connection() {
 }
 
 ssize_t gatts_send_response(const char* resp) {
-    return bufio_push_bytes(&conn_res_buff, resp, strlen(resp));
+    ssize_t sz;
+    sz = bufio_push_bytes(&conn_res_buff, resp, strlen(resp));
+    sz += bufio_push_byte(&conn_res_buff, 10); // Append \n
+    return sz;
 }

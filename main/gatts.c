@@ -186,9 +186,21 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d\n", param->write.conn_id,
-                 param->write.trans_id, param->write.handle);
+        // ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d\n", param->write.conn_id,
+        //                 param->write.trans_id, param->write.handle);
 
+        memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+        rsp.attr_value.handle = param->write.handle;
+        memcpy(rsp.attr_value.value, param->write.value, param->write.len);
+        rsp.attr_value.len = param->write.len;
+        rsp.attr_value.offset = param->write.len;
+
+        if(bufio_avail(&conn_cmd_buff) < param->write.len) {
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_PREPARE_Q_FULL,
+                                        &rsp);
+            bufio_discard_all(&conn_cmd_buff);
+            break;
+        }
         bufio_push_bytes(&conn_cmd_buff, param->write.value, param->write.len);
         char* end_cmd = strchr(bufio_tail(&conn_cmd_buff), 10); // Search for "\n"
         if(end_cmd != NULL) {
@@ -200,11 +212,6 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
         if(param->write.is_prep) {
-            memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
-            rsp.attr_value.handle = param->write.handle;
-            memcpy(rsp.attr_value.value, param->write.value, param->write.len);
-            rsp.attr_value.len = param->write.len;
-            rsp.attr_value.offset = param->write.len;
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
         } else {
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
@@ -364,8 +371,11 @@ esp_err_t gatts_close_connection() {
 }
 
 ssize_t gatts_send_response(const char* resp) {
-    ssize_t sz;
-    sz = bufio_push_bytes(&conn_res_buff, resp, strlen(resp));
-    sz += bufio_push_byte(&conn_res_buff, 10); // Append \n
+    ssize_t sz = strlen(resp);
+    if(bufio_avail(&conn_res_buff) < sz + 1) {
+        return 0;
+    }
+    bufio_push_bytes(&conn_res_buff, resp, sz);
+    bufio_push_byte(&conn_res_buff, 10); // Append \n
     return sz;
 }

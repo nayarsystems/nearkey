@@ -14,44 +14,46 @@
 // Config stuff
 #define CFG_VERSION 1
 
-struct config_s {
+static struct config_s {
     uint32_t cfg_version;
     uint32_t key_index;
     uint8_t id[6];
     uint8_t master_key[16];
-} __attribute__((packed));
+} __attribute__((packed)) config;
 
-typedef struct config_s config_t;
-
-static config_t config;
 static nvs_handle nvs_config_h;
 // --- End Config stuff
 
 // Session stuff
-static uint8_t derived_key[32];
-static uint8_t nounce[16];
-static uint8_t address[6];
-static bool connected = false;
+static struct session_s {
+    uint8_t derived_key[32];
+    uint32_t nounce;
+    uint8_t address[6];
+    bool connected;
+} session;
 // --- End Session stuff
 
 int connect_cb(const esp_bd_addr_t addr) {
-    if(connected) {
+    if(session.connected) {
         return 1;
     }
-    memcpy(address, addr, sizeof(address));
-    connected = true;
-    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x\n", address[0], address[1], address[2],
-             address[3], address[4], address[5]);
+    memset(&session, 0, sizeof(session));
+    memcpy(&session.address, addr, sizeof(session.address));
+    session.nounce = esp_random();
+    session.connected = true;
+
+    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
+             session.address[2], session.address[3], session.address[4], session.address[5]);
     return 0;
 }
 
 int disconnect_cb(const esp_bd_addr_t addr) {
-    if(!connected) {
+    if(!session.connected) {
         return 1;
     }
-    connected = false;
-    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x\n", addr[0], addr[1], addr[2], addr[3], addr[4],
-             addr[5]);
+    session.connected = false;
+    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
+             session.address[2], session.address[3], session.address[4], session.address[5]);
 
     return 0;
 }
@@ -79,7 +81,7 @@ static esp_err_t init_flash() {
 static esp_err_t save_flash_config() {
     esp_err_t err;
 
-    err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config_t));
+    err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config));
     if(err != ESP_OK) {
         goto fail;
     }
@@ -98,7 +100,7 @@ static esp_err_t reset_flash_config() {
     esp_err_t err = ESP_OK;
 
     ESP_LOGI(LOG_TAG, "Reseting flash config...\n");
-    memset(&config, 0, sizeof(config_t));
+    memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
     config.key_index = 0;
     for(int i = 0; i < 6; i++) {
@@ -138,10 +140,10 @@ static esp_err_t load_flash_config() {
             goto fail;
         }
     }
-    if(size != sizeof(config_t)) {
+    if(size != sizeof(config)) {
         ESP_LOGW(LOG_TAG, "Config size mismatch!\n")
-        if(size > sizeof(config_t)) {
-            size = sizeof(config_t);
+        if(size > sizeof(config)) {
+            size = sizeof(config);
         }
     }
     err = nvs_get_blob(nvs_config_h, "config", &config, &size); // Get blob size

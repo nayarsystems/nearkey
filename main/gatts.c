@@ -188,7 +188,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_WRITE_EVT: {
         // ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d\n", param->write.conn_id,
         //                 param->write.trans_id, param->write.handle);
-
+        int res = 0;
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->write.handle;
         memcpy(rsp.attr_value.value, param->write.value, param->write.len);
@@ -207,7 +207,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             *end_cmd = '\0';
             size_t cmd_size = strlen((char*)bufio_tail(&conn_cmd_buff));
             if(gatts_cmd_cb != NULL) {
-                gatts_cmd_cb(bufio_tail(&conn_cmd_buff), cmd_size);
+                res = gatts_cmd_cb(bufio_tail(&conn_cmd_buff), cmd_size);
             }
             bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
@@ -215,6 +215,9 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
         } else {
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        }
+        if(res != 0) {
+            esp_ble_gatts_close(gatts_if, param->connect.conn_id);
         }
         break;
     }
@@ -371,6 +374,9 @@ esp_err_t gatts_close_connection() {
 }
 
 ssize_t gatts_send_response(const char* resp) {
+    if(!conn_connected) {
+        return 0;
+    }
     ssize_t sz = strlen(resp);
     if(bufio_avail(&conn_res_buff) < sz + 1) {
         return 0;

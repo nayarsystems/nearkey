@@ -5,8 +5,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gatts.h"
+#include "mbedtls/base64.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include <stdatomic.h>
 #include <string.h>
 
 #define LOG_TAG "MAIN"
@@ -25,22 +27,26 @@ static nvs_handle nvs_config_h;
 // --- End Config stuff
 
 // Session stuff
+#define DEF_CONN_TIMEOUT 100
 static struct session_s {
     uint8_t derived_key[32];
     uint32_t nounce;
     uint8_t address[6];
-    bool connected;
+    atomic_int conn_timeout;
+    atomic_bool connected;
+
 } session;
 // --- End Session stuff
 
 int connect_cb(const esp_bd_addr_t addr) {
-    if(session.connected) {
+    if(atomic_load(&session.connected)) {
         return 1;
     }
     memset(&session, 0, sizeof(session));
     memcpy(&session.address, addr, sizeof(session.address));
     session.nounce = esp_random();
-    session.connected = true;
+    atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
+    atomic_store(&session.connected, true);
 
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
@@ -48,10 +54,10 @@ int connect_cb(const esp_bd_addr_t addr) {
 }
 
 int disconnect_cb(const esp_bd_addr_t addr) {
-    if(!session.connected) {
+    if(!atomic_load(&session.connected)) {
         return 1;
     }
-    session.connected = false;
+    atomic_store(&session.connected, false);
     ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
 
@@ -60,6 +66,7 @@ int disconnect_cb(const esp_bd_addr_t addr) {
 
 int cmd_cb(const char* cmd, size_t size) {
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
+    atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
     gatts_send_response(cmd);
     return 0;
 }
@@ -164,4 +171,19 @@ void app_main(void) {
     ESP_LOGI(LOG_TAG, "device id: %02x%02x%02x%02x%02x%02x\n", config.id[5], config.id[4], config.id[3], config.id[2],
              config.id[1], config.id[0]);
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_index, config.id));
+
+    while(1) {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        if(atomic_load(&session.connected)) {
+
+            if(atomic_load(&session.conn_timeout) > 0) {
+                atomic_fetch_sub(&session.conn_timeout, 1);
+            } else {
+                ESP_LOGI(LOG_TAG, "Watch dog disconnection\n");
+                atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
+                gatts_close_connection();
+            }
+        }
+    }
 }

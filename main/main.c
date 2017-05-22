@@ -36,8 +36,8 @@ static struct session_s {
     SemaphoreHandle_t sem;
     uint8_t derived_key[32];
     cJSON* login_obj;
-    char* nounce;
-    char* rnounce;
+    char* nonce;
+    char* rnonce;
     uint8_t address[6];
     bool login;
     int conn_timeout;
@@ -45,7 +45,7 @@ static struct session_s {
 } session;
 // --- End Session stuff
 
-static char* nounce_str() {
+static char* nonce_str() {
     uint8_t bin[16];
     size_t olen = 0;
 
@@ -54,10 +54,10 @@ static char* nounce_str() {
     }
     mbedtls_base64_encode(NULL, 0, &olen, bin, sizeof(bin));
 
-    char* nounce = calloc(1, olen + 1);
-    mbedtls_base64_encode((uint8_t*)nounce, olen, &olen, bin, sizeof(bin));
+    char* nonce = calloc(1, olen + 1);
+    mbedtls_base64_encode((uint8_t*)nonce, olen, &olen, bin, sizeof(bin));
 
-    return nounce;
+    return nonce;
 }
 
 static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
@@ -82,7 +82,67 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
 }
 
 static int respond(cJSON* resp) {
-    return 0;
+    int res = 0;
+    char* json_str = NULL;
+    char* b64_str = NULL;
+    char* sign_str = NULL;
+    char* res_str = NULL;
+    uint8_t sign_bin[32];
+    mbedtls_sha256_context sha256_ctx = {};
+    size_t olen = 0;
+
+    // Append n and x nonce fields
+    cJSON_AddStringToObject(resp, "n", session.nonce);
+    cJSON_AddStringToObject(resp, "x", session.rnonce);
+    json_str = cJSON_PrintUnformatted(resp);
+    if(json_str == NULL) {
+        ESP_LOGE("RESPOND", "Fail encoding JSON data");
+        res = 1;
+        goto exitfn;
+    }
+    ESP_LOGI("RESPOND", "JSON response: %s", json_str);
+    mbedtls_base64_encode(NULL, 0, &olen, (uint8_t*)json_str, strlen(json_str));
+    b64_str = calloc(1, olen + 1);
+    if(b64_str == NULL) {
+        ESP_LOGE("RESPOND", "Unable to alloc %d for b64 data", olen);
+        res = 1;
+        goto exitfn;
+    }
+    mbedtls_base64_encode((uint8_t*)b64_str, olen, &olen, (uint8_t*)json_str, strlen(json_str));
+
+    // Compute signature
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)b64_str, strlen(b64_str));
+    mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
+    mbedtls_sha256_finish(&sha256_ctx, sign_bin);
+    mbedtls_sha256_free(&sha256_ctx);
+    mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
+    sign_str = calloc(1, olen + 1);
+    if(sign_str == NULL) {
+        ESP_LOGE("RESPOND", "Unable to alloc %d for signature data", olen);
+        res = 1;
+        goto exitfn;
+    }
+    mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, sizeof(sign_bin));
+    asprintf(&res_str, "%s %s", b64_str, sign_str);
+    gatts_send_response(res_str);
+    ESP_LOGI("RESPOND", "Raw response: %s", res_str);
+
+exitfn:
+    if(json_str != NULL) {
+        free(json_str);
+    }
+    if(b64_str != NULL) {
+        free(b64_str);
+    }
+    if(sign_str != NULL) {
+        free(sign_str);
+    }
+    if(res_str != NULL) {
+        free(res_str);
+    }
+    return res;
 }
 
 static int do_login(const char* cmd) {
@@ -92,11 +152,12 @@ static int do_login(const char* cmd) {
     mbedtls_sha256_context sha256_ctx = {};
     char chbuf[128];
     char* json_data = NULL;
-    cJSON* json_item;
+    cJSON* json_item = NULL;
+    cJSON* json_resp = NULL;
 
     sl = pl = str_split(cmd, " ");
     if(str_list_len(sl) != 2) {
-        ESP_LOGE("LOGIN", "invalid login data (split data/nounce)");
+        ESP_LOGE("LOGIN", "invalid login data (split data/nonce)");
         ret = 1;
         goto exitfn;
     }
@@ -125,8 +186,8 @@ static int do_login(const char* cmd) {
     ESP_LOGI("LOGIN", "json str: %s", json_data);
     pl = pl->next;
 
-    // Set Session rnounce
-    SETPTR(session.rnounce, strdup(pl->s));
+    // Set Session rnonce
+    SETPTR(session.rnonce, strdup(pl->s));
 
     // Decode json_data
     SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
@@ -157,6 +218,14 @@ static int do_login(const char* cmd) {
         goto exitfn;
     }
 
+    json_resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(json_resp, "res", "ok");
+    ret = respond(json_resp);
+    if(ret) {
+        ESP_LOGE("LOGIN", "Fail sending response");
+        goto exitfn;
+    }
+
     session.login = true;
     ret = 0;
 exitfn:
@@ -165,6 +234,9 @@ exitfn:
     }
     if(json_data != NULL) {
         free(json_data);
+    }
+    if(json_resp != NULL) {
+        cJSON_Delete(json_resp);
     }
     return ret;
 }
@@ -183,13 +255,13 @@ static int connect_cb(const esp_bd_addr_t addr) {
         goto exitfn;
     }
     memcpy(&session.address, addr, sizeof(session.address));
-    SETPTR(session.nounce, nounce_str());
+    SETPTR(session.nonce, nonce_str());
     session.conn_timeout = DEF_CONN_TIMEOUT;
     session.connected = true;
     session.login = false;
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
-    ESP_LOGI(LOG_TAG, "First NOUNCE: %s", session.nounce);
+    ESP_LOGI(LOG_TAG, "First nonce: %s", session.nonce);
 exitfn:
     xSemaphoreGive(session.sem);
     return ret;

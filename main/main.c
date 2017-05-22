@@ -1,3 +1,6 @@
+#include <string.h>
+
+#include "cJSON.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -11,8 +14,6 @@
 #include "nvs_flash.h"
 #include "parseutils.h"
 #include "utils.h"
-#include <stdatomic.h>
-#include <string.h>
 
 #define LOG_TAG "MAIN"
 
@@ -34,6 +35,7 @@ static nvs_handle nvs_config_h;
 static struct session_s {
     SemaphoreHandle_t sem;
     uint8_t derived_key[32];
+    cJSON* login_obj;
     char* nounce;
     char* rnounce;
     uint8_t address[6];
@@ -52,7 +54,7 @@ static char* nounce_str() {
     }
     mbedtls_base64_encode(NULL, 0, &olen, bin, sizeof(bin));
 
-    char* nounce = calloc(1, olen);
+    char* nounce = calloc(1, olen + 1);
     mbedtls_base64_encode((uint8_t*)nounce, olen, &olen, bin, sizeof(bin));
 
     return nounce;
@@ -74,39 +76,97 @@ static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     *dst = 0;
 }
 
+static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
+    mbedtls_base64_encode((uint8_t*)dst, dst_sz, &dst_sz, buf, sz);
+    dst[dst_sz] = 0;
+}
+
+static int respond(cJSON* resp) {
+    return 0;
+}
+
 static int do_login(const char* cmd) {
-    int rv = 0;
+    int ret = 0;
     str_list *sl = NULL, *pl = NULL;
-    char* json_data = NULL;
     size_t olen = 0;
+    mbedtls_sha256_context sha256_ctx = {};
+    char chbuf[128];
+    char* json_data = NULL;
+    cJSON* json_item;
 
     sl = pl = str_split(cmd, " ");
     if(str_list_len(sl) != 2) {
         ESP_LOGE("LOGIN", "invalid login data (split data/nounce)");
-        goto fail;
+        ret = 1;
+        goto exitfn;
     }
+
+    // Calculate derived key
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
+    mbedtls_sha256_finish(&sha256_ctx, session.derived_key);
+    mbedtls_sha256_free(&sha256_ctx);
+    bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
+    ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
+
     if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
         ESP_LOGE("LOGIN", "invalid base64 data (probe)");
-        goto fail;
+        ret = 1;
+        goto exitfn;
     }
-    json_data = calloc(1, olen);
+    json_data = calloc(1, olen + 1);
     if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
         ESP_LOGE("LOGIN", "invalid base64 data");
-        goto fail;
+        ret = 1;
+        goto exitfn;
     }
-    ESP_LOGI("login", "Login data: %s\n", json_data);
+    ESP_LOGI("LOGIN", "json str: %s", json_data);
+    pl = pl->next;
 
-    goto ok;
-fail:
-    rv = 1;
-ok:
+    // Set Session rnounce
+    SETPTR(session.rnounce, strdup(pl->s));
+
+    // Decode json_data
+    SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
+    if(session.login_obj == NULL) {
+        ESP_LOGE("LOGIN", "invalid json data");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(session.login_obj->type & cJSON_Object)) {
+        ESP_LOGE("LOGIN", "json login is not object type");
+        ret = 1;
+        goto exitfn;
+    }
+    json_item = cJSON_GetObjectItem(session.login_obj, "t");
+    if(json_item == NULL) {
+        ESP_LOGE("LOGIN", "login object hasn't [t] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("LOGIN", "json entry [t] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    if(strcmp(json_item->valuestring, "login") != 0) {
+        ESP_LOGE("LOGIN", "First command must be \"login\" type");
+        ret = 1;
+        goto exitfn;
+    }
+
+    session.login = true;
+    ret = 0;
+exitfn:
     if(sl != NULL) {
         str_list_free(sl);
     }
     if(json_data != NULL) {
         free(json_data);
     }
-    return rv;
+    return ret;
 }
 
 static int do_cmd(const char* cmd) {
@@ -126,10 +186,10 @@ static int connect_cb(const esp_bd_addr_t addr) {
     SETPTR(session.nounce, nounce_str());
     session.conn_timeout = DEF_CONN_TIMEOUT;
     session.connected = true;
-    session.login = true;
-    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
+    session.login = false;
+    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
-    ESP_LOGI(LOG_TAG, "First NOUNCE: %s\n", session.nounce);
+    ESP_LOGI(LOG_TAG, "First NOUNCE: %s", session.nounce);
 exitfn:
     xSemaphoreGive(session.sem);
     return ret;
@@ -145,7 +205,7 @@ static int disconnect_cb(const esp_bd_addr_t addr) {
         goto exitfn;
     }
     session.connected = false;
-    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
+    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
 exitfn:
     xSemaphoreGive(session.sem);
@@ -192,26 +252,28 @@ static esp_err_t init_flash() {
 }
 
 static esp_err_t save_flash_config() {
-    esp_err_t err;
+    esp_err_t err = ESP_OK;
 
     err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config));
     if(err != ESP_OK) {
-        goto fail;
+        goto exitfn;
     }
     err = nvs_commit(nvs_config_h);
     if(err != ESP_OK)
-        goto fail;
-    ESP_LOGI(LOG_TAG, "Config writen to flash!\n");
-    return err;
-fail:
-    ESP_LOGE(LOG_TAG, "Error (%d) writing config to flash!\n", err);
+        goto exitfn;
+    ESP_LOGI(LOG_TAG, "Config writen to flash!");
+    err = ESP_OK;
+exitfn:
+    if(err != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "Error (%d) writing config to flash!", err);
+    }
     return err;
 }
 
 static esp_err_t reset_flash_config() {
     esp_err_t err = ESP_OK;
 
-    ESP_LOGI(LOG_TAG, "Reseting flash config...\n");
+    ESP_LOGI(LOG_TAG, "Reseting flash config...");
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
     config.key_index = 0;
@@ -229,42 +291,42 @@ static esp_err_t load_flash_config() {
 
     esp_err_t err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
     if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) opening nvs config handle\n", err);
-        return err;
+        ESP_LOGE(LOG_TAG, "Error (%d) opening nvs config handle", err);
+        goto exitfn;
     }
     size_t size;
     err = nvs_get_blob(nvs_config_h, "config", NULL, &size); // Get blob size
     if(err != ESP_OK) {
         if(err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(LOG_TAG, "config not found, creating new one\n");
+            ESP_LOGW(LOG_TAG, "config not found, creating new one");
             err = reset_flash_config();
             if(err != ESP_OK) {
-                goto fail;
+                goto exitfn;
             }
             err = nvs_get_blob(nvs_config_h, "config", NULL, &size); // Get blob size 2nd attempt
             if(err != ESP_OK) {
-                goto fail;
+                goto exitfn;
             }
 
         } else {
-            ESP_LOGE(LOG_TAG, "Error (%d) reading config blob size\n", err);
-            goto fail;
+            ESP_LOGE(LOG_TAG, "Error (%d) reading config blob size", err);
+            goto exitfn;
         }
     }
     if(size != sizeof(config)) {
-        ESP_LOGW(LOG_TAG, "Config size mismatch!\n")
+        ESP_LOGW(LOG_TAG, "Config size mismatch!")
         if(size > sizeof(config)) {
             size = sizeof(config);
         }
     }
     err = nvs_get_blob(nvs_config_h, "config", &config, &size); // Get blob size
     if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) reading config\n", err)
-        goto fail;
+        ESP_LOGE(LOG_TAG, "Error (%d) reading config!", err)
+        goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "Config loaded\n")
-    return ESP_OK;
-fail:
+    ESP_LOGI(LOG_TAG, "Config loaded")
+    err = ESP_OK;
+exitfn:
     return err;
 }
 
@@ -277,9 +339,9 @@ void app_main(void) {
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     bin2hex(config.id, 6, chbuf, sizeof(chbuf));
-    ESP_LOGI(LOG_TAG, "device id: %s\n", chbuf);
-    bin2hex(config.master_key, 16, chbuf, sizeof(chbuf));
-    ESP_LOGI(LOG_TAG, "master key: %s\n", chbuf);
+    ESP_LOGI(LOG_TAG, "device id: %s", chbuf);
+    bin2b64(config.master_key, 16, chbuf, sizeof(chbuf));
+    ESP_LOGI(LOG_TAG, "master key: %s", chbuf);
 
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_index, config.id));
 
@@ -291,7 +353,7 @@ void app_main(void) {
             if(session.conn_timeout > 0) {
                 session.conn_timeout--;
             } else {
-                ESP_LOGI(LOG_TAG, "Watch dog disconnection\n");
+                ESP_LOGE(LOG_TAG, "Watch dog disconnection");
                 session.conn_timeout = DEF_CONN_TIMEOUT;
                 gatts_close_connection();
             }

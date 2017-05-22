@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "bt.h"
 #include "bta_api.h"
 #include "bufio.h"
@@ -21,9 +25,6 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
@@ -136,15 +137,15 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         // advertising start complete event to indicate advertising start successfully or failed
         if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(LOG_TAG, "Advertising start failed\n");
+            ESP_LOGE(LOG_TAG, "Advertising start failed");
         } else {
-            ESP_LOGI(LOG_TAG, "Start adv successfully\n");
+            ESP_LOGI(LOG_TAG, "Start adv successfully");
         }
     case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
         if(param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(LOG_TAG, "Advertising stop failed\n");
+            ESP_LOGE(LOG_TAG, "Advertising stop failed");
         } else {
-            ESP_LOGI(LOG_TAG, "Stop adv successfully\n");
+            ESP_LOGI(LOG_TAG, "Stop adv successfully");
         }
         break;
     default:
@@ -158,7 +159,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
 
     switch(event) {
     case ESP_GATTS_REG_EVT: {
-        ESP_LOGI(LOG_TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
+        ESP_LOGI(LOG_TAG, "REGISTER_APP_EVT, status %d, app_id %d", param->reg.status, param->reg.app_id);
         gl_profile_tab[PROFILE_A_APP_ID].service_id.is_primary = true;
         gl_profile_tab[PROFILE_A_APP_ID].service_id.id.inst_id = 0x00;
         gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.len = ESP_UUID_LEN_128;
@@ -171,7 +172,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_READ_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d\n", param->read.conn_id,
+        ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
                  param->read.trans_id, param->read.handle);
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
@@ -222,7 +223,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_EXEC_WRITE_EVT:
-        ESP_LOGI(LOG_TAG, "GATT_EXEC_WRITE_EVT, conn_id %d, trans_id %d\n", param->exec_write.conn_id,
+        ESP_LOGI(LOG_TAG, "GATT_EXEC_WRITE_EVT, conn_id %d, trans_id %d", param->exec_write.conn_id,
                  param->exec_write.trans_id);
 
         esp_ble_gatts_send_response(gatts_if, param->exec_write.conn_id, param->exec_write.trans_id, ESP_GATT_OK, NULL);
@@ -232,7 +233,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_UNREG_EVT:
         break;
     case ESP_GATTS_CREATE_EVT: {
-        ESP_LOGI(LOG_TAG, "CREATE_SERVICE_EVT, status %d,  service_handle %d\n", param->create.status,
+        ESP_LOGI(LOG_TAG, "CREATE_SERVICE_EVT, status %d,  service_handle %d", param->create.status,
                  param->create.service_handle);
         gl_profile_tab[PROFILE_A_APP_ID].service_handle = param->create.service_handle;
         gl_profile_tab[PROFILE_A_APP_ID].char_uuid.len = ESP_UUID_LEN_128;
@@ -252,13 +253,13 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
 
     case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-        ESP_LOGI(LOG_TAG, "ADD_DESCR_EVT, status %d, attr_handle %d, service_handle %d\n", param->add_char.status,
+        ESP_LOGI(LOG_TAG, "ADD_DESCR_EVT, status %d, attr_handle %d, service_handle %d", param->add_char.status,
                  param->add_char.attr_handle, param->add_char.service_handle);
         break;
     case ESP_GATTS_DELETE_EVT:
         break;
     case ESP_GATTS_START_EVT:
-        ESP_LOGI(LOG_TAG, "SERVICE_START_EVT, status %d, service_handle %d\n", param->start.status,
+        ESP_LOGI(LOG_TAG, "SERVICE_START_EVT, status %d, service_handle %d", param->start.status,
                  param->start.service_handle);
         break;
     case ESP_GATTS_STOP_EVT:
@@ -301,7 +302,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
         if(param->reg.status == ESP_GATT_OK) {
             gl_profile_tab[param->reg.app_id].gatts_if = gatts_if;
         } else {
-            ESP_LOGI(LOG_TAG, "Reg app failed, app_id %04x, status %d\n", param->reg.app_id, param->reg.status);
+            ESP_LOGI(LOG_TAG, "Reg app failed, app_id %04x, status %d", param->reg.app_id, param->reg.status);
             return;
         }
     }
@@ -340,23 +341,23 @@ int init_gatts(gatts_connect_cb_t conn_cb,
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
     if(ret) {
-        ESP_LOGE(LOG_TAG, "%s initialize controller failed\n", __func__);
+        ESP_LOGE(LOG_TAG, "%s initialize controller failed", __func__);
         return ESP_FAIL;
     }
 
     ret = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
     if(ret) {
-        ESP_LOGE(LOG_TAG, "%s enable controller failed\n", __func__);
+        ESP_LOGE(LOG_TAG, "%s enable controller failed", __func__);
         return ESP_FAIL;
     }
     ret = esp_bluedroid_init();
     if(ret) {
-        ESP_LOGE(LOG_TAG, "%s init bluetooth failed\n", __func__);
+        ESP_LOGE(LOG_TAG, "%s init bluetooth failed", __func__);
         return ESP_FAIL;
     }
     ret = esp_bluedroid_enable();
     if(ret) {
-        ESP_LOGE(LOG_TAG, "%s enable bluetooth failed\n", __func__);
+        ESP_LOGE(LOG_TAG, "%s enable bluetooth failed", __func__);
         return ESP_FAIL;
     }
 

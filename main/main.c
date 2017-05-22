@@ -32,14 +32,14 @@ static nvs_handle nvs_config_h;
 // Session stuff
 #define DEF_CONN_TIMEOUT 100
 static struct session_s {
+    SemaphoreHandle_t sem;
     uint8_t derived_key[32];
     char* nounce;
     char* rnounce;
     uint8_t address[6];
     bool login;
-    atomic_int conn_timeout;
-    atomic_bool connected;
-
+    int conn_timeout;
+    bool connected;
 } session;
 // --- End Session stuff
 
@@ -114,49 +114,70 @@ static int do_cmd(const char* cmd) {
 }
 
 static int connect_cb(const esp_bd_addr_t addr) {
-    if(atomic_load(&session.connected)) {
-        return 1;
-    }
-    memset(&session, 0, sizeof(session));
-    memcpy(&session.address, addr, sizeof(session.address));
-    SETPTR(session.nounce, nounce_str(16));
-    atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
-    atomic_store(&session.connected, true);
+    int ret = 0;
 
+    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+        ;
+    if(session.connected) {
+        ret = 1;
+        goto exitfn;
+    }
+    memcpy(&session.address, addr, sizeof(session.address));
+    SETPTR(session.nounce, nounce_str());
+    session.conn_timeout = DEF_CONN_TIMEOUT;
+    session.connected = true;
+    session.login = true;
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
     ESP_LOGI(LOG_TAG, "First NOUNCE: %s\n", session.nounce);
-    return 0;
+exitfn:
+    xSemaphoreGive(session.sem);
+    return ret;
 }
 
 static int disconnect_cb(const esp_bd_addr_t addr) {
-    if(!atomic_load(&session.connected)) {
-        return 1;
+    int ret = 0;
+
+    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+        ;
+    if(!session.connected) {
+        ret = 1;
+        goto exitfn;
     }
-    atomic_store(&session.connected, false);
+    session.connected = false;
     ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x\n", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
-
-    return 0;
+exitfn:
+    xSemaphoreGive(session.sem);
+    return ret;
 }
 
 static int cmd_cb(const char* cmd, size_t size) {
+    int ret = 0;
+
+    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+        ;
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
     if(!session.login) {
         if(do_login(cmd) != 0) {
-            return 1;
+            ret = 1;
+            goto exitfn;
         }
     } else {
         if(do_cmd(cmd) != 0) {
-            return 1;
+            ret = 1;
+            goto exitfn;
         }
     }
-    atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
-    // gatts_send_response(cmd);
-    return 0;
+    session.conn_timeout = DEF_CONN_TIMEOUT;
+// gatts_send_response(cmd);
+exitfn:
+    xSemaphoreGive(session.sem);
+    return ret;
 }
 
 static esp_err_t init_flash() {
+
     esp_err_t err = nvs_flash_init();
     if(err == ESP_ERR_NVS_NO_FREE_PAGES) {
         // NVS partition was truncated and needs to be erased
@@ -182,7 +203,6 @@ static esp_err_t save_flash_config() {
         goto fail;
     ESP_LOGI(LOG_TAG, "Config writen to flash!\n");
     return err;
-
 fail:
     ESP_LOGE(LOG_TAG, "Error (%d) writing config to flash!\n", err);
     return err;
@@ -201,18 +221,17 @@ static esp_err_t reset_flash_config() {
     for(int i = 0; i < 16; i++) {
         config.master_key[i] = (uint8_t)(esp_random() & 0xff);
     }
-
     err = save_flash_config();
     return err;
 }
 
 static esp_err_t load_flash_config() {
+
     esp_err_t err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
     if(err != ESP_OK) {
         ESP_LOGE(LOG_TAG, "Error (%d) opening nvs config handle\n", err);
         return err;
     }
-
     size_t size;
     err = nvs_get_blob(nvs_config_h, "config", NULL, &size); // Get blob size
     if(err != ESP_OK) {
@@ -251,7 +270,10 @@ fail:
 
 void app_main(void) {
     char chbuf[65];
+
     ESP_LOGI(LOG_TAG, "Starting virkey...")
+    session.sem = xSemaphoreCreateMutex();
+    xSemaphoreGive(session.sem);
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     bin2hex(config.id, 6, chbuf, sizeof(chbuf));
@@ -263,16 +285,17 @@ void app_main(void) {
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
-
-        if(atomic_load(&session.connected)) {
-
-            if(atomic_load(&session.conn_timeout) > 0) {
-                atomic_fetch_sub(&session.conn_timeout, 1);
+        while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+            ;
+        if(session.connected) {
+            if(session.conn_timeout > 0) {
+                session.conn_timeout--;
             } else {
                 ESP_LOGI(LOG_TAG, "Watch dog disconnection\n");
-                atomic_store(&session.conn_timeout, DEF_CONN_TIMEOUT);
+                session.conn_timeout = DEF_CONN_TIMEOUT;
                 gatts_close_connection();
             }
         }
+        xSemaphoreGive(session.sem);
     }
 }

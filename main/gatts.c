@@ -172,8 +172,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_READ_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
-                 param->read.trans_id, param->read.handle);
+        // ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
+        //         param->read.trans_id, param->read.handle);
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         int len = bufio_used(&conn_res_buff);

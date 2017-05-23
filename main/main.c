@@ -92,8 +92,10 @@ static int respond(cJSON* resp) {
     size_t olen = 0;
 
     // Append n and x nonce fields
+    SETPTR(session.nonce, nonce_str()); // New nonce
     cJSON_AddStringToObject(resp, "n", session.nonce);
     cJSON_AddStringToObject(resp, "x", session.rnonce);
+
     json_str = cJSON_PrintUnformatted(resp);
     if(json_str == NULL) {
         ESP_LOGE("RESPOND", "Fail encoding JSON data");
@@ -242,7 +244,146 @@ exitfn:
 }
 
 static int do_cmd(const char* cmd) {
-    return 0;
+    int ret = 0;
+    str_list *sl = NULL, *pl = NULL;
+    size_t olen = 0;
+    mbedtls_sha256_context sha256_ctx = {};
+    uint8_t sig_calc[32] = {0};
+    uint8_t sig_peer[32] = {0};
+    char* cmd_str = NULL;
+    char* json_data = NULL;
+    cJSON* json_cmd = NULL;
+    cJSON* json_item = NULL;
+    cJSON* json_resp = NULL;
+
+    sl = pl = str_split(cmd, " ");
+    if(str_list_len(sl) != 2) {
+        ESP_LOGE("CMD", "invalid command data (split data/signature)");
+        ret = 1;
+        goto exitfn;
+    }
+
+    // Calculate signature
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
+    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
+    mbedtls_sha256_free(&sha256_ctx);
+
+    // Check signature
+    pl = pl->next;
+    olen = sizeof(sig_peer);
+    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
+        ESP_LOGE("CMD", "invalid b64 signature");
+        ret = 1;
+        goto exitfn;
+    }
+    if(memcmp(sig_calc, sig_peer, sizeof(sig_calc)) != 0) {
+        ESP_LOGE("CMD", "Signature don't match");
+        ret = 1;
+        goto exitfn;
+    }
+
+    // Decode json data
+    pl = sl;
+    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        ESP_LOGE("CMD", "invalid b64 data (probe)");
+        ret = 1;
+        goto exitfn;
+    }
+    json_data = calloc(1, olen + 1);
+    if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
+        ESP_LOGE("CMD", "invalid b64 JSON data");
+        ret = 1;
+        goto exitfn;
+    }
+    ESP_LOGI("CMD", "cmd: %s", json_data);
+    json_cmd = cJSON_Parse(json_data);
+    if(json_cmd == NULL) {
+        ESP_LOGE("CMD", "malformed JSON data");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_cmd->type & cJSON_Object)) {
+        ESP_LOGE("CMD", "JSON is not object type");
+        ret = 1;
+        goto exitfn;
+    }
+    json_item = cJSON_GetObjectItem(json_cmd, "x");
+    if(json_item == NULL) {
+        ESP_LOGE("CMD", "cmd object hasn't [x] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CMD", "entry [x] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    if(strcmp(session.nonce, json_item->valuestring) != 0) {
+        ESP_LOGE("CMD", "nonce don't match");
+        ret = 1;
+        goto exitfn;
+    }
+    json_item = cJSON_GetObjectItem(json_cmd, "n");
+    if(json_item == NULL) {
+        ESP_LOGE("CMD", "cmd object hasn't [n] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CMD", "entry [n] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    SETPTR(session.rnonce, strdup(json_item->valuestring));
+    json_item = cJSON_GetObjectItem(json_cmd, "t");
+    if(json_item == NULL) {
+        ESP_LOGE("CMD", "cmd object hasn't [t] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CMD", "entry [t] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    cmd_str = strdup(json_item->valuestring);
+    ESP_LOGI("CMD", "Executing CMD: %s", cmd_str);
+
+    if(strcmp(cmd_str, "bye") == 0) {
+        session.conn_timeout = 2;
+        session.login = false;
+        ret = 2;
+    }
+
+    // Responding command
+    json_resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(json_resp, "res", "ok");
+    if(respond(json_resp) != 0) {
+        ESP_LOGE("LOGIN", "Fail sending response");
+        ret = 1;
+        goto exitfn;
+    }
+
+exitfn:
+    if(sl != NULL) {
+        str_list_free(sl);
+    }
+    if(json_data != NULL) {
+        free(json_data);
+    }
+    if(cmd_str != NULL) {
+        free(cmd_str);
+    }
+    if(json_cmd != NULL) {
+        cJSON_Delete(json_cmd);
+    }
+    if(json_resp != NULL) {
+        cJSON_Delete(json_resp);
+    }
+    return ret;
 }
 
 static int connect_cb(const esp_bd_addr_t addr) {
@@ -255,13 +396,11 @@ static int connect_cb(const esp_bd_addr_t addr) {
         goto exitfn;
     }
     memcpy(&session.address, addr, sizeof(session.address));
-    SETPTR(session.nonce, nonce_str());
     session.conn_timeout = DEF_CONN_TIMEOUT;
     session.connected = true;
     session.login = false;
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
-    ESP_LOGI(LOG_TAG, "First nonce: %s", session.nonce);
 exitfn:
     xSemaphoreGive(session.sem);
     return ret;
@@ -291,19 +430,15 @@ static int cmd_cb(const char* cmd, size_t size) {
         ;
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
     if(!session.login) {
-        if(do_login(cmd) != 0) {
-            ret = 1;
-            goto exitfn;
-        }
+        ret = do_login(cmd);
     } else {
-        if(do_cmd(cmd) != 0) {
-            ret = 1;
-            goto exitfn;
+        ret = do_cmd(cmd);
+        if(ret == 0) {
+            session.conn_timeout = DEF_CONN_TIMEOUT;
+        } else if(ret == 2) {
+            ret = 0;
         }
     }
-    session.conn_timeout = DEF_CONN_TIMEOUT;
-// gatts_send_response(cmd);
-exitfn:
     xSemaphoreGive(session.sem);
     return ret;
 }

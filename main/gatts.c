@@ -333,8 +333,10 @@ int init_gatts(gatts_connect_cb_t conn_cb,
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
     gatts_cmd_cb = cmd_cb;
-    memcpy(adv_key_counter, &key_counter, sizeof(key_counter));
-    memcpy(adv_uuid, id, 6);
+    memcpy(adv_key_counter, &key_counter, sizeof(key_counter)); // Warning. Endianess dependent !!!
+    for(int i = 0; i <= 5; i++) {
+        adv_uuid[i] = id[5 - i];
+    }
     bufio_init(&conn_cmd_buff, CMD_BUFF_SIZE);
     bufio_init(&conn_res_buff, RES_BUFF_SIZE);
 

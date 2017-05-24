@@ -17,14 +17,29 @@
 
 #define LOG_TAG "MAIN"
 
+// Errors
+#define ERR_OLD_KEY_VERSION 1
+#define ERR_OLD_KEY_VERSION_S "Old Key version"
+#define ERR_PERMISSION_DENIED 2
+#define ERR_PERMISSION_DENIED_S "Permission denied"
+#define ERR_UNKNOWN_COMMAND 3
+#define ERR_UNKNOWN_COMMAND_S "Unknown command"
+// --- End Errors
+
+// Function definitions
+static esp_err_t save_flash_config();
+// --- End Function definitions
+
 // Config stuff
-#define CFG_VERSION 1
+#define CFG_VERSION 2
 
 static struct config_s {
     uint32_t cfg_version;
-    uint32_t key_index;
+    bool virgin;
+    uint32_t key_version;
+    uint32_t cmd_version;
+    uint8_t master_key[32];
     uint8_t id[6];
-    uint8_t master_key[16];
 } __attribute__((packed)) config;
 
 static nvs_handle nvs_config_h;
@@ -34,6 +49,7 @@ static nvs_handle nvs_config_h;
 #define DEF_CONN_TIMEOUT 100
 static struct session_s {
     SemaphoreHandle_t sem;
+    uint32_t key_version;
     uint8_t derived_key[32];
     cJSON* login_obj;
     char* nonce;
@@ -42,11 +58,12 @@ static struct session_s {
     bool login;
     int conn_timeout;
     bool connected;
+    bool smart_reboot;
 } session;
 // --- End Session stuff
 
 static char* nonce_str() {
-    uint8_t bin[16];
+    uint8_t bin[8];
     size_t olen = 0;
 
     for(size_t i = 0; i < sizeof(bin); i++) {
@@ -164,16 +181,6 @@ static int do_login(const char* cmd) {
         goto exitfn;
     }
 
-    // Calculate derived key
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
-    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
-    mbedtls_sha256_finish(&sha256_ctx, session.derived_key);
-    mbedtls_sha256_free(&sha256_ctx);
-    bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
-    ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
-
     if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
         ESP_LOGE("LOGIN", "invalid base64 data (probe)");
         ret = 1;
@@ -219,17 +226,96 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
+    json_item = cJSON_GetObjectItem(session.login_obj, "v");
+    if(json_item == NULL) {
+        ESP_LOGE("LOGIN", "login object hasn't [v] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_Number)) {
+        ESP_LOGE("LOGIN", "json entry [v] isn't number type");
+        ret = 1;
+        goto exitfn;
+    }
+    session.key_version = json_item->valueint;
+
+    if(config.virgin) {
+        json_item = cJSON_GetObjectItem(session.login_obj, "m");
+        if(json_item == NULL) {
+            ESP_LOGE("LOGIN", "login object hasn't [m] entry and lock is unformated");
+            ret = 1;
+            goto exitfn;
+        }
+        if(!(json_item->type & cJSON_String)) {
+            ESP_LOGE("LOGIN", "json entry [m] isn't string type");
+            ret = 1;
+            goto exitfn;
+        }
+        if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
+                                 strlen(json_item->valuestring)) != 0) {
+            ESP_LOGE("LOGIN", "error decoding master key.");
+            ret = 1;
+            goto exitfn;
+        }
+        if(olen != sizeof(config.master_key)) {
+            ESP_LOGE("LOGIN", "master key size mismatch: %d != %d", olen, sizeof(config.master_key));
+            ret = 1;
+            goto exitfn;
+        }
+        json_item = cJSON_GetObjectItem(session.login_obj, "i");
+        if(json_item == NULL) {
+            ESP_LOGE("LOGIN", "login object hasn't [i] entry and lock is unformated");
+            ret = 1;
+            goto exitfn;
+        }
+        if(!(json_item->type & cJSON_String)) {
+            ESP_LOGE("LOGIN", "json entry [i] isn't string type");
+            ret = 1;
+            goto exitfn;
+        }
+        if(mbedtls_base64_decode(config.id, sizeof(config.id), &olen, (uint8_t*)json_item->valuestring,
+                                 strlen(json_item->valuestring)) != 0) {
+            ESP_LOGE("LOGIN", "error decoding id.");
+            ret = 1;
+            goto exitfn;
+        }
+        if(olen != sizeof(config.id)) {
+            ESP_LOGE("LOGIN", "master id size mismatch: %d != %d", olen, sizeof(config.master_key));
+            ret = 1;
+            goto exitfn;
+        }
+        config.virgin = false;
+        save_flash_config();
+        session.smart_reboot = true;
+    }
 
     json_resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(json_resp, "res", "ok");
-    ret = respond(json_resp);
-    if(ret) {
+    if(session.key_version < config.key_version) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
+        cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
+        ret = 2;
+        goto exitresp;
+    }
+
+    cJSON_AddStringToObject(json_resp, "r", "ok");
+    session.login = true;
+
+exitresp:
+    // Calculate derived key
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
+    mbedtls_sha256_finish(&sha256_ctx, session.derived_key);
+    mbedtls_sha256_free(&sha256_ctx);
+    bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
+    ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
+    if(respond(json_resp) != 0) {
         ESP_LOGE("LOGIN", "Fail sending response");
+        ret = 1;
         goto exitfn;
     }
 
-    session.login = true;
-    ret = 0;
 exitfn:
     if(sl != NULL) {
         str_list_free(sl);
@@ -352,15 +438,21 @@ static int do_cmd(const char* cmd) {
     cmd_str = strdup(json_item->valuestring);
     ESP_LOGI("CMD", "Executing CMD: %s", cmd_str);
 
+    json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "bye") == 0) {
         session.conn_timeout = 2;
         session.login = false;
+        cJSON_AddStringToObject(json_resp, "r", "ok");
         ret = 2;
+        goto exitresp;
+    }
+    if(strcmp(cmd_str, "nop") == 0) {
+        cJSON_AddStringToObject(json_resp, "r", "ok");
+        ret = 0;
+        goto exitresp;
     }
 
-    // Responding command
-    json_resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(json_resp, "res", "ok");
+exitresp:
     if(respond(json_resp) != 0) {
         ESP_LOGE("LOGIN", "Fail sending response");
         ret = 1;
@@ -419,6 +511,9 @@ static int disconnect_cb(const esp_bd_addr_t addr) {
     ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
 exitfn:
+    if(session.smart_reboot) {
+        esp_restart();
+    }
     xSemaphoreGive(session.sem);
     return ret;
 }
@@ -433,12 +528,18 @@ static int cmd_cb(const char* cmd, size_t size) {
         ret = do_login(cmd);
     } else {
         ret = do_cmd(cmd);
-        if(ret == 0) {
-            session.conn_timeout = DEF_CONN_TIMEOUT;
-        } else if(ret == 2) {
-            ret = 0;
+        if(ret == 0 && config.key_version < session.key_version) {
+            config.key_version = session.key_version;
+            save_flash_config();
+            session.smart_reboot = true;
         }
     }
+    if(ret == 0) {
+        session.conn_timeout = DEF_CONN_TIMEOUT;
+    } else if(ret == 2) {
+        ret = 0;
+    }
+
     xSemaphoreGive(session.sem);
     return ret;
 }
@@ -483,13 +584,10 @@ static esp_err_t reset_flash_config() {
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
-    config.key_index = 0;
-    for(int i = 0; i < 6; i++) {
-        config.id[i] = (uint8_t)(esp_random() & 0xff);
-    }
-    for(int i = 0; i < 16; i++) {
-        config.master_key[i] = (uint8_t)(esp_random() & 0xff);
-    }
+    config.virgin = true;
+    config.key_version = 0;
+    memset(config.id, 0, sizeof(config.id));
+    memset(config.master_key, 0, sizeof(config.master_key));
     err = save_flash_config();
     return err;
 }
@@ -547,10 +645,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(load_flash_config());
     bin2hex(config.id, 6, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "device id: %s", chbuf);
-    bin2b64(config.master_key, 16, chbuf, sizeof(chbuf));
+    bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf);
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_index, config.id));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_version, config.id));
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);

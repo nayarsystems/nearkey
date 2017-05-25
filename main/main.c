@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "driver/gpio.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -61,6 +62,12 @@ static struct session_s {
     bool smart_reboot;
 } session;
 // --- End Session stuff
+
+// Actuator timers
+#define DEF_ACT_TIMEOUT 30
+static uint32_t act0_tm;
+static bool pre_reset;
+// --- End Actuator timers
 
 static char* nonce_str() {
     uint8_t bin[8];
@@ -176,23 +183,23 @@ static int do_login(const char* cmd) {
 
     sl = pl = str_split(cmd, " ");
     if(str_list_len(sl) != 2) {
-        ESP_LOGE("LOGIN", "invalid login data (split data/nonce)");
+        ESP_LOGE("LOGIN", "Invalid login data (split data/nonce)");
         ret = 1;
         goto exitfn;
     }
 
     if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ESP_LOGE("LOGIN", "invalid base64 data (probe)");
+        ESP_LOGE("LOGIN", "Invalid base64 data (probe)");
         ret = 1;
         goto exitfn;
     }
     json_data = calloc(1, olen + 1);
     if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
-        ESP_LOGE("LOGIN", "invalid base64 data");
+        ESP_LOGE("LOGIN", "Invalid base64 data");
         ret = 1;
         goto exitfn;
     }
-    ESP_LOGI("LOGIN", "json str: %s", json_data);
+    ESP_LOGI("LOGIN", "JSON str: %s", json_data);
     pl = pl->next;
 
     // Set Session rnonce
@@ -201,23 +208,23 @@ static int do_login(const char* cmd) {
     // Decode json_data
     SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
     if(session.login_obj == NULL) {
-        ESP_LOGE("LOGIN", "invalid json data");
+        ESP_LOGE("LOGIN", "Invalid json data");
         ret = 1;
         goto exitfn;
     }
     if(!(session.login_obj->type & cJSON_Object)) {
-        ESP_LOGE("LOGIN", "json login is not object type");
+        ESP_LOGE("LOGIN", "JSON login is not object type");
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(session.login_obj, "t");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "login object hasn't [t] entry");
+        ESP_LOGE("LOGIN", "Login object hasn't [t] entry");
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("LOGIN", "json entry [t] isn't string type");
+        ESP_LOGE("LOGIN", "JSON entry [t] isn't string type");
         ret = 1;
         goto exitfn;
     }
@@ -228,12 +235,12 @@ static int do_login(const char* cmd) {
     }
     json_item = cJSON_GetObjectItem(session.login_obj, "v");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "login object hasn't [v] entry");
+        ESP_LOGE("LOGIN", "Login object hasn't [v] entry");
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("LOGIN", "json entry [v] isn't number type");
+        ESP_LOGE("LOGIN", "JSON entry [v] isn't number type");
         ret = 1;
         goto exitfn;
     }
@@ -242,45 +249,45 @@ static int do_login(const char* cmd) {
     if(config.virgin) {
         json_item = cJSON_GetObjectItem(session.login_obj, "m");
         if(json_item == NULL) {
-            ESP_LOGE("LOGIN", "login object hasn't [m] entry and lock is unformated");
+            ESP_LOGE("LOGIN", "Login object hasn't [m] entry and lock is unformated");
             ret = 1;
             goto exitfn;
         }
         if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("LOGIN", "json entry [m] isn't string type");
+            ESP_LOGE("LOGIN", "JSON entry [m] isn't string type");
             ret = 1;
             goto exitfn;
         }
         if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
                                  strlen(json_item->valuestring)) != 0) {
-            ESP_LOGE("LOGIN", "error decoding master key.");
+            ESP_LOGE("LOGIN", "Error decoding master key.");
             ret = 1;
             goto exitfn;
         }
         if(olen != sizeof(config.master_key)) {
-            ESP_LOGE("LOGIN", "master key size mismatch: %d != %d", olen, sizeof(config.master_key));
+            ESP_LOGE("LOGIN", "Master key size mismatch: %d != %d", olen, sizeof(config.master_key));
             ret = 1;
             goto exitfn;
         }
         json_item = cJSON_GetObjectItem(session.login_obj, "i");
         if(json_item == NULL) {
-            ESP_LOGE("LOGIN", "login object hasn't [i] entry and lock is unformated");
+            ESP_LOGE("LOGIN", "Login object hasn't [i] entry and lock is unformated");
             ret = 1;
             goto exitfn;
         }
         if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("LOGIN", "json entry [i] isn't string type");
+            ESP_LOGE("LOGIN", "JSON entry [i] isn't string type");
             ret = 1;
             goto exitfn;
         }
         if(mbedtls_base64_decode(config.id, sizeof(config.id), &olen, (uint8_t*)json_item->valuestring,
                                  strlen(json_item->valuestring)) != 0) {
-            ESP_LOGE("LOGIN", "error decoding id.");
+            ESP_LOGE("LOGIN", "Error decoding id.");
             ret = 1;
             goto exitfn;
         }
         if(olen != sizeof(config.id)) {
-            ESP_LOGE("LOGIN", "master id size mismatch: %d != %d", olen, sizeof(config.master_key));
+            ESP_LOGE("LOGIN", "Master id size mismatch: %d != %d", olen, sizeof(config.master_key));
             ret = 1;
             goto exitfn;
         }
@@ -344,7 +351,7 @@ static int do_cmd(const char* cmd) {
 
     sl = pl = str_split(cmd, " ");
     if(str_list_len(sl) != 2) {
-        ESP_LOGE("CMD", "invalid command data (split data/signature)");
+        ESP_LOGE("CMD", "Invalid command data (split data/signature)");
         ret = 1;
         goto exitfn;
     }
@@ -361,7 +368,7 @@ static int do_cmd(const char* cmd) {
     pl = pl->next;
     olen = sizeof(sig_peer);
     if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
-        ESP_LOGE("CMD", "invalid b64 signature");
+        ESP_LOGE("CMD", "Invalid b64 signature");
         ret = 1;
         goto exitfn;
     }
@@ -374,20 +381,20 @@ static int do_cmd(const char* cmd) {
     // Decode json data
     pl = sl;
     if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ESP_LOGE("CMD", "invalid b64 data (probe)");
+        ESP_LOGE("CMD", "Invalid b64 data (probe)");
         ret = 1;
         goto exitfn;
     }
     json_data = calloc(1, olen + 1);
     if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
-        ESP_LOGE("CMD", "invalid b64 JSON data");
+        ESP_LOGE("CMD", "Invalid b64 JSON data");
         ret = 1;
         goto exitfn;
     }
     ESP_LOGI("CMD", "cmd: %s", json_data);
     json_cmd = cJSON_Parse(json_data);
     if(json_cmd == NULL) {
-        ESP_LOGE("CMD", "malformed JSON data");
+        ESP_LOGE("CMD", "Malformed JSON data");
         ret = 1;
         goto exitfn;
     }
@@ -398,40 +405,40 @@ static int do_cmd(const char* cmd) {
     }
     json_item = cJSON_GetObjectItem(json_cmd, "x");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "cmd object hasn't [x] entry");
+        ESP_LOGE("CMD", "Cmd object hasn't [x] entry");
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "entry [x] isn't string type");
+        ESP_LOGE("CMD", "Entry [x] isn't string type");
         ret = 1;
         goto exitfn;
     }
     if(strcmp(session.nonce, json_item->valuestring) != 0) {
-        ESP_LOGE("CMD", "nonce don't match");
+        ESP_LOGE("CMD", "Nonce don't match");
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(json_cmd, "n");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "cmd object hasn't [n] entry");
+        ESP_LOGE("CMD", "Cmd object hasn't [n] entry");
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "entry [n] isn't string type");
+        ESP_LOGE("CMD", "Entry [n] isn't string type");
         ret = 1;
         goto exitfn;
     }
     SETPTR(session.rnonce, strdup(json_item->valuestring));
     json_item = cJSON_GetObjectItem(json_cmd, "t");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "cmd object hasn't [t] entry");
+        ESP_LOGE("CMD", "Cmd object hasn't [t] entry");
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "entry [t] isn't string type");
+        ESP_LOGE("CMD", "Entry [t] isn't string type");
         ret = 1;
         goto exitfn;
     }
@@ -451,6 +458,17 @@ static int do_cmd(const char* cmd) {
         ret = 0;
         goto exitresp;
     }
+
+    if(strcmp(cmd_str, "a0") == 0) {
+        cJSON_AddStringToObject(json_resp, "r", "ok");
+        act0_tm = DEF_ACT_TIMEOUT;
+        ret = 0;
+        goto exitresp;
+    }
+
+    cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
+    cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
+    ret = 2;
 
 exitresp:
     if(respond(json_resp) != 0) {
@@ -635,12 +653,50 @@ exitfn:
     return err;
 }
 
+static void setup_gpio() {
+    gpio_config_t io_conf;
+    // disable interrupt
+    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    // set as output mode
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    // bit mask of the pins that you want to set,e.g.GPIO18/19
+    io_conf.pin_bit_mask = (1 << 23);
+    // disable pull-down mode
+    io_conf.pull_down_en = 0;
+    // disable pull-up mode
+    io_conf.pull_up_en = 0;
+    // configure GPIO with the given settings
+    gpio_config(&io_conf);
+
+    // disable interrupt
+    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    // set as input mode
+    io_conf.mode = GPIO_MODE_INPUT;
+    // bit mask of the pins that you want to set,e.g.GPIO18/19
+    io_conf.pin_bit_mask = (1 << 0);
+    // disable pull-down mode
+    io_conf.pull_down_en = 0;
+    // disable pull-up mode
+    io_conf.pull_up_en = 1;
+    // configure GPIO with the given settings
+    gpio_config(&io_conf);
+}
+
+static void set_actuator(int st) {
+    gpio_set_level(23, st);
+}
+
+static int get_reset_button() {
+    return gpio_get_level(0);
+}
+
 void app_main(void) {
     char chbuf[65];
 
     ESP_LOGI(LOG_TAG, "Starting virkey...")
     session.sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session.sem);
+    setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     bin2hex(config.id, 6, chbuf, sizeof(chbuf));
@@ -654,6 +710,22 @@ void app_main(void) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session.sem, portMAX_DELAY))
             ;
+        if(act0_tm > 0) {
+            act0_tm--;
+        }
+        set_actuator(act0_tm > 0 ? 1 : 0);
+
+        if(get_reset_button() == 0) {
+            ESP_LOGI(LOG_TAG, "Reset button!!!!");
+            pre_reset = true;
+            act0_tm = DEF_ACT_TIMEOUT;
+        }
+
+        if(pre_reset && act0_tm == 0) {
+            reset_flash_config();
+            esp_restart();
+        }
+
         if(session.connected) {
             if(session.conn_timeout > 0) {
                 session.conn_timeout--;

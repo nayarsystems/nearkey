@@ -66,8 +66,11 @@ static struct session_s {
 // Actuator timers
 #define DEF_ACT_TIMEOUT 30
 static uint32_t act0_tm;
-static bool pre_reset;
 // --- End Actuator timers
+
+// Reset timer
+static uint32_t reset_tm;
+static bool erase_on_reset;
 
 static char* nonce_str() {
     uint8_t bin[8];
@@ -530,7 +533,7 @@ static int disconnect_cb(const esp_bd_addr_t addr) {
              session.address[2], session.address[3], session.address[4], session.address[5]);
 exitfn:
     if(session.smart_reboot) {
-        esp_restart();
+        reset_tm = 1;
     }
     xSemaphoreGive(session.sem);
     return ret;
@@ -717,13 +720,19 @@ void app_main(void) {
 
         if(get_reset_button() == 0) {
             ESP_LOGI(LOG_TAG, "Reset button!!!!");
-            pre_reset = true;
             act0_tm = DEF_ACT_TIMEOUT;
+            reset_tm = DEF_ACT_TIMEOUT + 1;
+            erase_on_reset = true;
         }
 
-        if(pre_reset && act0_tm == 0) {
-            reset_flash_config();
-            esp_restart();
+        if(reset_tm > 0) {
+            reset_tm--;
+            if(!reset_tm) {
+                if (erase_on_reset){
+                    reset_flash_config();
+                }
+                esp_restart();
+            }
         }
 
         if(session.connected) {

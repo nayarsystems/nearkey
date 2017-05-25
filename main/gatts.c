@@ -326,17 +326,13 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 int init_gatts(gatts_connect_cb_t conn_cb,
                gatts_disconnect_cb_t disconn_cb,
                gatts_cmd_cb_t cmd_cb,
-               uint32_t key_counter,
-               uint8_t* id) {
+               uint32_t key_counter) {
     esp_err_t ret;
 
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
     gatts_cmd_cb = cmd_cb;
     memcpy(adv_key_counter, &key_counter, sizeof(key_counter)); // Warning. Endianess dependent !!!
-    for(int i = 0; i <= 5; i++) {
-        adv_uuid[i] = id[5 - i];
-    }
     bufio_init(&conn_cmd_buff, CMD_BUFF_SIZE);
     bufio_init(&conn_res_buff, RES_BUFF_SIZE);
 

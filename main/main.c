@@ -36,11 +36,9 @@ static esp_err_t save_flash_config();
 
 static struct config_s {
     uint32_t cfg_version;
-    bool virgin;
     uint32_t key_version;
     uint32_t cmd_version;
     uint8_t master_key[32];
-    uint8_t id[6];
 } __attribute__((packed)) config;
 
 static nvs_handle nvs_config_h;
@@ -87,7 +85,7 @@ static char* nonce_str() {
     return nonce;
 }
 
-static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
+/*static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     const char* hexconv = "0123456789abcdef";
 
     while(sz > 0 && dst_sz > 2) {
@@ -101,7 +99,7 @@ static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
         sz--;
     }
     *dst = 0;
-}
+}*/
 
 static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     mbedtls_base64_encode((uint8_t*)dst, dst_sz, &dst_sz, buf, sz);
@@ -249,7 +247,12 @@ static int do_login(const char* cmd) {
     }
     session.key_version = json_item->valueint;
 
-    if(config.virgin) {
+    if(config.key_version == 0) {
+        if(session.key_version < 1) {
+            ESP_LOGE("LOGIN", "lock is unformated and v <  1");
+            ret = 1;
+            goto exitfn;
+        }
         json_item = cJSON_GetObjectItem(session.login_obj, "m");
         if(json_item == NULL) {
             ESP_LOGE("LOGIN", "Login object hasn't [m] entry and lock is unformated");
@@ -272,29 +275,7 @@ static int do_login(const char* cmd) {
             ret = 1;
             goto exitfn;
         }
-        json_item = cJSON_GetObjectItem(session.login_obj, "i");
-        if(json_item == NULL) {
-            ESP_LOGE("LOGIN", "Login object hasn't [i] entry and lock is unformated");
-            ret = 1;
-            goto exitfn;
-        }
-        if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("LOGIN", "JSON entry [i] isn't string type");
-            ret = 1;
-            goto exitfn;
-        }
-        if(mbedtls_base64_decode(config.id, sizeof(config.id), &olen, (uint8_t*)json_item->valuestring,
-                                 strlen(json_item->valuestring)) != 0) {
-            ESP_LOGE("LOGIN", "Error decoding id.");
-            ret = 1;
-            goto exitfn;
-        }
-        if(olen != sizeof(config.id)) {
-            ESP_LOGE("LOGIN", "Master id size mismatch: %d != %d", olen, sizeof(config.master_key));
-            ret = 1;
-            goto exitfn;
-        }
-        config.virgin = false;
+        config.key_version = session.key_version;
         save_flash_config();
         session.smart_reboot = true;
     }
@@ -605,9 +586,7 @@ static esp_err_t reset_flash_config() {
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
-    config.virgin = true;
     config.key_version = 0;
-    memset(config.id, 0, sizeof(config.id));
     memset(config.master_key, 0, sizeof(config.master_key));
     err = save_flash_config();
     return err;
@@ -702,12 +681,10 @@ void app_main(void) {
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
-    bin2hex(config.id, 6, chbuf, sizeof(chbuf));
-    ESP_LOGI(LOG_TAG, "device id: %s", chbuf);
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
-    ESP_LOGI(LOG_TAG, "master key: %s", chbuf);
+    ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_version, config.id));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_version));
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -728,7 +705,7 @@ void app_main(void) {
         if(reset_tm > 0) {
             reset_tm--;
             if(!reset_tm) {
-                if (erase_on_reset){
+                if(erase_on_reset) {
                     reset_flash_config();
                 }
                 esp_restart();

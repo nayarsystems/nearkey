@@ -52,8 +52,8 @@ static struct session_s {
     uint32_t key_version;
     uint8_t derived_key[32];
     cJSON* login_obj;
-    char* nonce;
-    char* rnonce;
+    uint64_t nonce;
+    uint64_t rnonce;
     uint8_t address[6];
     bool login;
     int conn_timeout;
@@ -71,21 +71,6 @@ static uint32_t act0_tm;
 static uint32_t reset_tm;
 static bool erase_on_reset;
 // --- End Reset timer
-
-static char* nonce_str() {
-    uint8_t bin[8];
-    size_t olen = 0;
-
-    for(size_t i = 0; i < sizeof(bin); i++) {
-        bin[i] = esp_random() & 0xff;
-    }
-    mbedtls_base64_encode(NULL, 0, &olen, bin, sizeof(bin));
-
-    char* nonce = calloc(1, olen + 1);
-    mbedtls_base64_encode((uint8_t*)nonce, olen, &olen, bin, sizeof(bin));
-
-    return nonce;
-}
 
 /*static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     const char* hexconv = "0123456789abcdef";
@@ -108,21 +93,22 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(cJSON* resp) {
+static int respond(cJSON* resp, bool add_nonce) {
     int res = 0;
     char* json_str = NULL;
     char* b64_str = NULL;
     char* sign_str = NULL;
     char* res_str = NULL;
     uint8_t sign_bin[32];
+    char nonce_str[32];
     mbedtls_sha256_context sha256_ctx = {};
     size_t olen = 0;
 
     // Append n and x nonce fields
-    SETPTR(session.nonce, nonce_str()); // New nonce
-    cJSON_AddStringToObject(resp, "n", session.nonce);
-    cJSON_AddStringToObject(resp, "x", session.rnonce);
-
+    if(add_nonce) {
+        snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
+        cJSON_AddStringToObject(resp, "n", nonce_str);
+    }
     json_str = cJSON_PrintUnformatted(resp);
     if(json_str == NULL) {
         ESP_LOGE("RESPOND", "Fail encoding JSON data");
@@ -140,9 +126,13 @@ static int respond(cJSON* resp) {
     mbedtls_base64_encode((uint8_t*)b64_str, olen, &olen, (uint8_t*)json_str, strlen(json_str));
 
     // Compute signature
+    snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
+    ESP_LOGI("RESPOND", "Responding with nonce: \"%s\"", nonce_str);
+    session.rnonce++; // Increment rnonce for next response
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)b64_str, strlen(b64_str));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
     mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
     mbedtls_sha256_finish(&sha256_ctx, sign_bin);
     mbedtls_sha256_free(&sha256_ctx);
@@ -205,7 +195,7 @@ static int do_login(const char* cmd) {
     pl = pl->next;
 
     // Set Session rnonce
-    SETPTR(session.rnonce, strdup(pl->s));
+    session.rnonce = strtoull(pl->s, NULL, 10);
 
     // Decode json_data
     SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
@@ -302,7 +292,7 @@ exitresp:
     mbedtls_sha256_free(&sha256_ctx);
     bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
     ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
-    if(respond(json_resp) != 0) {
+    if(respond(json_resp, true) != 0) {
         ESP_LOGE("LOGIN", "Fail sending response");
         ret = 1;
         goto exitfn;
@@ -328,6 +318,7 @@ static int do_cmd(const char* cmd) {
     mbedtls_sha256_context sha256_ctx = {};
     uint8_t sig_calc[32] = {0};
     uint8_t sig_peer[32] = {0};
+    char nonce_str[32] = {0};
     char* cmd_str = NULL;
     char* json_data = NULL;
     cJSON* json_cmd = NULL;
@@ -342,9 +333,13 @@ static int do_cmd(const char* cmd) {
     }
 
     // Calculate signature
+    snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
+    ESP_LOGE("CMD", "Nonce esperado: %s", nonce_str);
+    session.nonce++; // Increment nonce for next command
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
     mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
     mbedtls_sha256_finish(&sha256_ctx, sig_calc);
     mbedtls_sha256_free(&sha256_ctx);
@@ -357,11 +352,11 @@ static int do_cmd(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    /*    if(olen < 16) {
-            ESP_LOGE("CMD", "Signature too short (%d)", olen);
-            ret = 1;
-            goto exitfn;
-        }*/
+    if(olen < 16) {
+        ESP_LOGE("CMD", "Signature too short (%d)", olen);
+        ret = 1;
+        goto exitfn;
+    }
     if(memcmp(sig_calc, sig_peer, olen) != 0) {
         ESP_LOGE("CMD", "Signature don't match");
         ret = 1;
@@ -393,34 +388,6 @@ static int do_cmd(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    json_item = cJSON_GetObjectItem(json_cmd, "x");
-    if(json_item == NULL) {
-        ESP_LOGE("CMD", "Cmd object hasn't [x] entry");
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "Entry [x] isn't string type");
-        ret = 1;
-        goto exitfn;
-    }
-    if(strcmp(session.nonce, json_item->valuestring) != 0) {
-        ESP_LOGE("CMD", "Nonce don't match");
-        ret = 1;
-        goto exitfn;
-    }
-    json_item = cJSON_GetObjectItem(json_cmd, "n");
-    if(json_item == NULL) {
-        ESP_LOGE("CMD", "Cmd object hasn't [n] entry");
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "Entry [n] isn't string type");
-        ret = 1;
-        goto exitfn;
-    }
-    SETPTR(session.rnonce, strdup(json_item->valuestring));
     json_item = cJSON_GetObjectItem(json_cmd, "t");
     if(json_item == NULL) {
         ESP_LOGE("CMD", "Cmd object hasn't [t] entry");
@@ -461,7 +428,7 @@ static int do_cmd(const char* cmd) {
     ret = 2;
 
 exitresp:
-    if(respond(json_resp) != 0) {
+    if(respond(json_resp, false) != 0) {
         ESP_LOGE("LOGIN", "Fail sending response");
         ret = 1;
         goto exitfn;
@@ -498,6 +465,7 @@ static int connect_cb(const esp_bd_addr_t addr) {
     memcpy(&session.address, addr, sizeof(session.address));
     session.conn_timeout = DEF_CONN_TIMEOUT;
     session.connected = true;
+    session.nonce = esp_random();
     session.login = false;
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
@@ -681,7 +649,7 @@ static int get_reset_button() {
 void app_main(void) {
     char chbuf[65];
 
-    ESP_LOGI(LOG_TAG, "Starting virkey...")
+    ESP_LOGI(LOG_TAG, "Starting virkey...");
     session.sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session.sem);
     setup_gpio();

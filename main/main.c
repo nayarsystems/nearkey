@@ -45,6 +45,7 @@ static nvs_handle nvs_config_h;
 // --- End Config stuff
 
 // Session stuff
+#define DEF_SIGNATURE_SIZE 16
 #define DEF_CONN_TIMEOUT 100
 static struct session_s {
     SemaphoreHandle_t sem;
@@ -69,6 +70,7 @@ static uint32_t act0_tm;
 // Reset timer
 static uint32_t reset_tm;
 static bool erase_on_reset;
+// --- End Reset timer
 
 static char* nonce_str() {
     uint8_t bin[8];
@@ -147,11 +149,10 @@ static int respond(cJSON* resp) {
     mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
     sign_str = calloc(1, olen + 1);
     if(sign_str == NULL) {
-        ESP_LOGE("RESPOND", "Unable to alloc %d for signature data", olen);
         res = 1;
         goto exitfn;
     }
-    mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, sizeof(sign_bin));
+    mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
     asprintf(&res_str, "%s %s", b64_str, sign_str);
     gatts_send_response(res_str);
     ESP_LOGI("RESPOND", "Raw response: %s", res_str);
@@ -356,7 +357,12 @@ static int do_cmd(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    if(memcmp(sig_calc, sig_peer, sizeof(sig_calc)) != 0) {
+    /*    if(olen < 16) {
+            ESP_LOGE("CMD", "Signature too short (%d)", olen);
+            ret = 1;
+            goto exitfn;
+        }*/
+    if(memcmp(sig_calc, sig_peer, olen) != 0) {
         ESP_LOGE("CMD", "Signature don't match");
         ret = 1;
         goto exitfn;

@@ -220,8 +220,8 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    if(strcmp(json_item->valuestring, "login") != 0) {
-        ESP_LOGE("LOGIN", "First command must be \"login\" type");
+    if(strcmp(json_item->valuestring, "l") != 0) {
+        ESP_LOGE("LOGIN", "First command must be \"l\" type");
         ret = 1;
         goto exitfn;
     }

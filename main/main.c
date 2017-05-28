@@ -1,4 +1,9 @@
 #include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <stdbool.h>
+
 
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -6,8 +11,10 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_bt_defs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "gatts.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/sha256.h"

@@ -141,6 +141,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         } else {
             ESP_LOGI(LOG_TAG, "Start adv successfully");
         }
+        break;
     case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
         if(param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(LOG_TAG, "Advertising stop failed");

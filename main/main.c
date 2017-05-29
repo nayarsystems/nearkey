@@ -1,20 +1,19 @@
-#include <string.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stddef.h>
-#include <stdbool.h>
-
+#include <string.h>
 
 #include "cJSON.h"
 #include "driver/gpio.h"
+#include "esp_bt_defs.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_system.h"
-#include "esp_bt_defs.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "gatts.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/sha256.h"
@@ -410,20 +409,20 @@ static int do_cmd(const char* cmd) {
     ESP_LOGI("CMD", "Executing CMD: %s", cmd_str);
 
     json_resp = cJSON_CreateObject();
-    if(strcmp(cmd_str, "bye") == 0) {
+    if(strcmp(cmd_str, "q") == 0) { // Quit
         session.conn_timeout = 2;
         session.login = false;
         cJSON_AddStringToObject(json_resp, "r", "ok");
         ret = 2;
         goto exitresp;
     }
-    if(strcmp(cmd_str, "nop") == 0) {
+    if(strcmp(cmd_str, "n") == 0) { // Nop
         cJSON_AddStringToObject(json_resp, "r", "ok");
         ret = 0;
         goto exitresp;
     }
 
-    if(strcmp(cmd_str, "a0") == 0) {
+    if(strcmp(cmd_str, "a0") == 0) { // Actuator
         cJSON_AddStringToObject(json_resp, "r", "ok");
         act0_tm = DEF_ACT_TIMEOUT;
         ret = 0;

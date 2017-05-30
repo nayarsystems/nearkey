@@ -52,7 +52,7 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 16
-#define DEF_CONN_TIMEOUT 100
+#define DEF_CONN_TIMEOUT 50
 static struct session_s {
     SemaphoreHandle_t sem;
     uint32_t key_version;

@@ -173,8 +173,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_READ_EVT: {
-        // ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
-        //         param->read.trans_id, param->read.handle);
+        ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
+                 param->read.trans_id, param->read.handle);
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         int len = bufio_used(&conn_res_buff);
@@ -188,8 +188,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d", param->write.conn_id,
-                 param->write.trans_id, param->write.handle);
+        ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d, len %d, resp %d", param->write.conn_id,
+                 param->write.trans_id, param->write.handle, param->write.len, param->write.need_rsp);
         int res = 0;
 
         if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
@@ -199,7 +199,9 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             } else {
                 ESP_LOGI(LOG_TAG, "Notifications disabled")
             }
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+            if(param->write.need_rsp) {
+                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+            }
             break;
         }
 
@@ -210,8 +212,10 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         rsp.attr_value.offset = param->write.len;
 
         if(bufio_avail(&conn_cmd_buff) < param->write.len) {
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_PREPARE_Q_FULL,
-                                        &rsp);
+            if(param->write.need_rsp) {
+                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id,
+                                            ESP_GATT_PREPARE_Q_FULL, &rsp);
+            }
             bufio_discard_all(&conn_cmd_buff);
             break;
         }
@@ -225,10 +229,12 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             }
             bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
-        if(param->write.is_prep) {
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
-        } else {
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        if(param->write.need_rsp) {
+            if(param->write.is_prep) {
+                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
+            } else {
+                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+            }
         }
         if(res != 0) {
             esp_ble_gatts_close(gatts_if, param->connect.conn_id);

@@ -188,9 +188,21 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
-        // ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d\n", param->write.conn_id,
-        //                 param->write.trans_id, param->write.handle);
+        ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d", param->write.conn_id,
+                 param->write.trans_id, param->write.handle);
         int res = 0;
+
+        if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
+            uint16_t* p = (uint16_t*)param->write.value;
+            if(*p & 1) {
+                ESP_LOGI(LOG_TAG, "Notifications enabled")
+            } else {
+                ESP_LOGI(LOG_TAG, "Notifications disabled")
+            }
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+            break;
+        }
+
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->write.handle;
         memcpy(rsp.attr_value.value, param->write.value, param->write.len);
@@ -243,19 +255,30 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
 
         esp_ble_gatts_start_service(gl_profile_tab[PROFILE_A_APP_ID].service_handle);
 
-        esp_ble_gatts_add_char(gl_profile_tab[PROFILE_A_APP_ID].service_handle,
-                               &gl_profile_tab[PROFILE_A_APP_ID].char_uuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-                               ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE, NULL, NULL);
+        esp_ble_gatts_add_char(
+            gl_profile_tab[PROFILE_A_APP_ID].service_handle, &gl_profile_tab[PROFILE_A_APP_ID].char_uuid,
+            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+            ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_NOTIFY, NULL, NULL);
         break;
     }
     case ESP_GATTS_ADD_INCL_SRVC_EVT:
         break;
     case ESP_GATTS_ADD_CHAR_EVT:
+        ESP_LOGI(LOG_TAG, "ADD_CHAR_EVT, status %d,  attr_handle %d, service_handle %d\n", param->add_char.status,
+                 param->add_char.attr_handle, param->add_char.service_handle);
+        gl_profile_tab[PROFILE_A_APP_ID].char_handle = param->add_char.attr_handle;
+        gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
+        gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+        esp_ble_gatts_add_char_descr(gl_profile_tab[PROFILE_A_APP_ID].service_handle,
+                                     &gl_profile_tab[PROFILE_A_APP_ID].descr_uuid,
+                                     ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, NULL, NULL);
+
         break;
 
     case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-        ESP_LOGI(LOG_TAG, "ADD_DESCR_EVT, status %d, attr_handle %d, service_handle %d", param->add_char.status,
-                 param->add_char.attr_handle, param->add_char.service_handle);
+        ESP_LOGI(LOG_TAG, "ADD_DESCR_EVT, status %d, attr_handle %d, service_handle %d", param->add_char_descr.status,
+                 param->add_char_descr.attr_handle, param->add_char_descr.service_handle);
+        gl_profile_tab[PROFILE_A_APP_ID].descr_handle = param->add_char_descr.attr_handle;
         break;
     case ESP_GATTS_DELETE_EVT:
         break;

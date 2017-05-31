@@ -102,7 +102,6 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
 static int respond(cJSON* resp, bool add_nonce) {
     int res = 0;
     char* json_str = NULL;
-    char* b64_str = NULL;
     char* sign_str = NULL;
     char* res_str = NULL;
     uint8_t sign_bin[32];
@@ -122,14 +121,6 @@ static int respond(cJSON* resp, bool add_nonce) {
         goto exitfn;
     }
     ESP_LOGI("RESPOND", "JSON response: %s", json_str);
-    mbedtls_base64_encode(NULL, 0, &olen, (uint8_t*)json_str, strlen(json_str));
-    b64_str = calloc(1, olen + 1);
-    if(b64_str == NULL) {
-        ESP_LOGE("RESPOND", "Unable to alloc %d for b64 data", olen);
-        res = 1;
-        goto exitfn;
-    }
-    mbedtls_base64_encode((uint8_t*)b64_str, olen, &olen, (uint8_t*)json_str, strlen(json_str));
 
     // Compute signature
     snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
@@ -137,7 +128,7 @@ static int respond(cJSON* resp, bool add_nonce) {
     session.rnonce++; // Increment rnonce for next response
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)b64_str, strlen(b64_str));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_str, strlen(json_str));
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
     mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
     mbedtls_sha256_finish(&sha256_ctx, sign_bin);
@@ -149,16 +140,13 @@ static int respond(cJSON* resp, bool add_nonce) {
         goto exitfn;
     }
     mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
-    asprintf(&res_str, "%s %s", b64_str, sign_str);
+    asprintf(&res_str, "%s~%s", json_str, sign_str);
     gatts_send_response(res_str);
     ESP_LOGI("RESPOND", "Raw response: %s", res_str);
 
 exitfn:
     if(json_str != NULL) {
         free(json_str);
-    }
-    if(b64_str != NULL) {
-        free(b64_str);
     }
     if(sign_str != NULL) {
         free(sign_str);
@@ -175,33 +163,26 @@ static int do_login(const char* cmd) {
     size_t olen = 0;
     mbedtls_sha256_context sha256_ctx = {};
     char chbuf[128];
-    char* json_data = NULL;
+    char* json_data;
+    char* nonce_data;
     cJSON* json_item = NULL;
     cJSON* json_resp = NULL;
 
-    sl = pl = str_split(cmd, " ");
+    sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 2) {
         ESP_LOGE("LOGIN", "Invalid login data (split data/nonce)");
         ret = 1;
         goto exitfn;
     }
 
-    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ESP_LOGE("LOGIN", "Invalid base64 data (probe)");
-        ret = 1;
-        goto exitfn;
-    }
-    json_data = calloc(1, olen + 1);
-    if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
-        ESP_LOGE("LOGIN", "Invalid base64 data");
-        ret = 1;
-        goto exitfn;
-    }
-    ESP_LOGI("LOGIN", "JSON str: %s", json_data);
+    json_data = pl->s;
     pl = pl->next;
+    nonce_data = pl->s;
+
+    ESP_LOGI("LOGIN", "Command: %s", json_data);
 
     // Set Session rnonce
-    session.rnonce = strtoull(pl->s, NULL, 10);
+    session.rnonce = strtoull(nonce_data, NULL, 10);
 
     // Decode json_data
     SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
@@ -308,9 +289,6 @@ exitfn:
     if(sl != NULL) {
         str_list_free(sl);
     }
-    if(json_data != NULL) {
-        free(json_data);
-    }
     if(json_resp != NULL) {
         cJSON_Delete(json_resp);
     }
@@ -327,16 +305,22 @@ static int do_cmd(const char* cmd) {
     char nonce_str[32] = {0};
     char* cmd_str = NULL;
     char* json_data = NULL;
+    char* sign_data = NULL;
     cJSON* json_cmd = NULL;
     cJSON* json_item = NULL;
     cJSON* json_resp = NULL;
 
-    sl = pl = str_split(cmd, " ");
+    ESP_LOGI("CMD", "raw cmd: %s", cmd);
+    sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 2) {
         ESP_LOGE("CMD", "Invalid command data (split data/signature)");
         ret = 1;
         goto exitfn;
     }
+
+    json_data = pl->s;
+    pl = pl->next;
+    sign_data = pl->s;
 
     // Calculate signature
     snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
@@ -344,16 +328,15 @@ static int do_cmd(const char* cmd) {
     session.nonce++; // Increment nonce for next command
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_data, strlen(json_data));
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
     mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
     mbedtls_sha256_finish(&sha256_ctx, sig_calc);
     mbedtls_sha256_free(&sha256_ctx);
 
     // Check signature
-    pl = pl->next;
     olen = sizeof(sig_peer);
-    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
+    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
         ESP_LOGE("CMD", "Invalid b64 signature");
         ret = 1;
         goto exitfn;
@@ -370,19 +353,6 @@ static int do_cmd(const char* cmd) {
     }
 
     // Decode json data
-    pl = sl;
-    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)pl->s, strlen(pl->s)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ESP_LOGE("CMD", "Invalid b64 data (probe)");
-        ret = 1;
-        goto exitfn;
-    }
-    json_data = calloc(1, olen + 1);
-    if(mbedtls_base64_decode((uint8_t*)json_data, olen, &olen, (uint8_t*)pl->s, strlen(pl->s)) != 0) {
-        ESP_LOGE("CMD", "Invalid b64 JSON data");
-        ret = 1;
-        goto exitfn;
-    }
-    ESP_LOGI("CMD", "cmd: %s", json_data);
     json_cmd = cJSON_Parse(json_data);
     if(json_cmd == NULL) {
         ESP_LOGE("CMD", "Malformed JSON data");
@@ -405,7 +375,7 @@ static int do_cmd(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    cmd_str = strdup(json_item->valuestring);
+    cmd_str = json_item->valuestring;
     ESP_LOGI("CMD", "Executing CMD: %s", cmd_str);
 
     json_resp = cJSON_CreateObject();
@@ -443,12 +413,6 @@ exitresp:
 exitfn:
     if(sl != NULL) {
         str_list_free(sl);
-    }
-    if(json_data != NULL) {
-        free(json_data);
-    }
-    if(cmd_str != NULL) {
-        free(cmd_str);
     }
     if(json_cmd != NULL) {
         cJSON_Delete(json_cmd);

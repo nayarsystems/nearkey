@@ -701,6 +701,7 @@ void app_main(void) {
                 gatts_close_connection();
             }
         }
+
         xSemaphoreGive(session.sem);
     }
 }

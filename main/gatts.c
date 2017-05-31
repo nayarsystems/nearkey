@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,9 +89,6 @@ static gatts_cmd_cb_t gatts_cmd_cb;
 // Connection status
 #define CMD_BUFF_SIZE 1024
 #define RES_BUFF_SIZE 1024
-static bool conn_connected;
-static uint16_t conn_gatts_if;
-static uint16_t conn_conn_id;
 static bufio_t conn_cmd_buff;
 static bufio_t conn_res_buff;
 // ---
@@ -100,6 +98,7 @@ static bufio_t conn_res_buff;
 
 struct gatts_profile_inst {
     esp_gatts_cb_t gatts_cb;
+    bool connected;
     uint16_t gatts_if;
     uint16_t app_id;
     uint16_t conn_id;
@@ -108,9 +107,10 @@ struct gatts_profile_inst {
     uint16_t char_handle;
     esp_bt_uuid_t char_uuid;
     esp_gatt_perm_t perm;
-    esp_gatt_char_prop_t property;
     uint16_t descr_handle;
     esp_bt_uuid_t descr_uuid;
+    uint16_t descr_val;
+    bool notif;
 };
 
 /* One gatt-based profile one app_id and one gatts_if, this array will store the gatts_if returned by ESP_GATTS_REG_EVT
@@ -177,6 +177,12 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
                  param->read.trans_id, param->read.handle);
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
+        if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
+            rsp.attr_value.len = 2;
+            memcpy(&rsp.attr_value.value[0], &gl_profile_tab[PROFILE_A_APP_ID].descr_val, 2);
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
+            break;
+        }
         int len = bufio_used(&conn_res_buff);
         if(len > 22) {
             len = 22;
@@ -193,10 +199,12 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         int res = 0;
 
         if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
-            uint16_t* p = (uint16_t*)param->write.value;
-            if(*p & 1) {
+            gl_profile_tab[PROFILE_A_APP_ID].descr_val = *((uint16_t*)param->write.value);
+            if(gl_profile_tab[PROFILE_A_APP_ID].descr_val & 1) {
+                gl_profile_tab[PROFILE_A_APP_ID].notif = true;
                 ESP_LOGI(LOG_TAG, "Notifications enabled")
             } else {
+                gl_profile_tab[PROFILE_A_APP_ID].notif = false;
                 ESP_LOGI(LOG_TAG, "Notifications disabled")
             }
             if(param->write.need_rsp) {
@@ -295,9 +303,6 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_STOP_EVT:
         break;
     case ESP_GATTS_CONNECT_EVT: {
-        conn_connected = true;
-        conn_gatts_if = gatts_if;
-        conn_conn_id = param->connect.conn_id;
         if(gatts_connect_cb != NULL) {
             if(gatts_connect_cb(param->connect.remote_bda)) {
                 esp_ble_gatts_close(gatts_if, param->connect.conn_id);
@@ -305,10 +310,11 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             }
         }
         gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
+        gl_profile_tab[PROFILE_A_APP_ID].connected = true;
         break;
     }
     case ESP_GATTS_DISCONNECT_EVT:
-        conn_connected = false;
+        gl_profile_tab[PROFILE_A_APP_ID].connected = false;
         if(gatts_disconnect_cb != NULL) {
             gatts_disconnect_cb(param->connect.remote_bda);
         }
@@ -396,14 +402,14 @@ int init_gatts(gatts_connect_cb_t conn_cb,
 }
 
 esp_err_t gatts_close_connection() {
-    if(conn_connected) {
-        return esp_ble_gatts_close(conn_gatts_if, conn_conn_id);
+    if(gl_profile_tab[PROFILE_A_APP_ID].connected) {
+        return esp_ble_gatts_close(gl_profile_tab[PROFILE_A_APP_ID].gatts_if, gl_profile_tab[PROFILE_A_APP_ID].conn_id);
     }
     return ESP_ERR_INVALID_STATE;
 }
 
 ssize_t gatts_send_response(const char* resp) {
-    if(!conn_connected) {
+    if(!gl_profile_tab[PROFILE_A_APP_ID].connected) {
         return 0;
     }
     ssize_t sz = strlen(resp);
@@ -412,5 +418,26 @@ ssize_t gatts_send_response(const char* resp) {
     }
     bufio_push_bytes(&conn_res_buff, resp, sz);
     bufio_push_byte(&conn_res_buff, 10); // Append \n
+
+    if(gl_profile_tab[PROFILE_A_APP_ID].notif) {
+        esp_err_t res;
+        int len = bufio_used(&conn_res_buff);
+        while(len) {
+            int chunk_len = len;
+            if(chunk_len > 20) {
+                chunk_len = 20;
+            }
+            res = esp_ble_gatts_send_indicate(
+                gl_profile_tab[PROFILE_A_APP_ID].gatts_if, gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                gl_profile_tab[PROFILE_A_APP_ID].char_handle, chunk_len, bufio_tail(&conn_res_buff), false);
+            if(res != ESP_OK) {
+                ESP_LOGE(LOG_TAG, "Error sending notification");
+            } else {
+                ESP_LOGI(LOG_TAG, "Notification sent");
+            }
+            bufio_discard(&conn_res_buff, chunk_len);
+            len -= chunk_len;
+        }
+    }
     return sz;
 }

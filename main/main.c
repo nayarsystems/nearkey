@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "esp_bt_defs.h"
+#include "esp_bt_device.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -51,7 +52,7 @@ static nvs_handle nvs_config_h;
 // --- End Config stuff
 
 // Session stuff
-#define DEF_SIGNATURE_SIZE 16
+#define DEF_SIGNATURE_SIZE 32
 #define DEF_CONN_TIMEOUT 50
 static struct session_s {
     SemaphoreHandle_t sem;
@@ -157,29 +158,131 @@ exitfn:
     return res;
 }
 
+static int do_init_config(const char* cmd) {
+    int ret = 0;
+    size_t olen;
+    cJSON* json_obj = NULL;
+    cJSON* json_item = NULL;
+
+    json_obj = cJSON_Parse(cmd);
+    if(json_obj == NULL) {
+        ESP_LOGE("CONFIG", "Invalid json data");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_obj->type & cJSON_Object)) {
+        ESP_LOGE("CONFIG", "JSON login is not object type");
+        ret = 1;
+        goto exitfn;
+    }
+    json_item = cJSON_GetObjectItem(json_obj, "t");
+    if(json_item == NULL) {
+        ESP_LOGE("CONFIG", "Login object hasn't [t] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CONFIG", "JSON entry [t] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    if(strcmp(json_item->valuestring, "c") != 0) {
+        ESP_LOGE("CONFIG", "Command must be \"c\" type");
+        ret = 1;
+        goto exitfn;
+    }
+    json_item = cJSON_GetObjectItem(json_obj, "m");
+    if(json_item == NULL) {
+        ESP_LOGE("CONFIG", "config command hasn't [m] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CONFIG", "JSON entry [m] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
+                             strlen(json_item->valuestring)) != 0) {
+        ESP_LOGE("CONFIG", "Error decoding master key.");
+        ret = 1;
+        goto exitfn;
+    }
+    if(olen != sizeof(config.master_key)) {
+        ESP_LOGE("CONFIG", "Master key size mismatch: %d != %d", olen, sizeof(config.master_key));
+        ret = 1;
+        goto exitfn;
+    }
+    config.key_version = 1;
+    save_flash_config();
+    session.smart_reboot = true;
+
+    gatts_send_response("{\"r\":\"ok\"}");
+    session.conn_timeout = 10;
+    ret = 2;
+
+exitfn:
+    if(json_obj != NULL) {
+        cJSON_Delete(json_obj);
+    }
+    return ret;
+}
+
 static int do_login(const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
-    size_t olen = 0;
     mbedtls_sha256_context sha256_ctx = {};
     char chbuf[128];
     char* json_data;
+    char* sign_data;
     char* nonce_data;
     cJSON* json_item = NULL;
     cJSON* json_resp = NULL;
+    uint8_t lmac[6];
+    const uint8_t* mac;
+    size_t olen;
+    uint8_t sig_calc[32] = {0};
+    uint8_t sig_peer[32] = {0};
 
     sl = pl = str_split_safe(cmd, "~");
-    if(str_list_len(sl) != 2) {
-        ESP_LOGE("LOGIN", "Invalid login data (split data/nonce)");
+    if(str_list_len(sl) != 3) {
+        ESP_LOGE("LOGIN", "Invalid login data (split login_data/signature/nonce)");
         ret = 1;
         goto exitfn;
     }
 
     json_data = pl->s;
     pl = pl->next;
+    sign_data = pl->s;
+    pl = pl->next;
     nonce_data = pl->s;
 
     ESP_LOGI("LOGIN", "Command: %s", json_data);
+
+    // Check login signature
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_data, strlen(json_data));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)"virkey.com", 10);
+    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
+    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
+    mbedtls_sha256_free(&sha256_ctx);
+    olen = sizeof(sig_peer);
+    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
+        ESP_LOGE("LOGIN", "Invalid b64 signature");
+        ret = 1;
+        goto exitfn;
+    }
+    if(olen != sizeof(sig_peer)) {
+        ESP_LOGE("LOGIN", "Signature length error");
+        ret = 1;
+        goto exitfn;
+    }
+    if(memcmp(sig_calc, sig_peer, olen) != 0) {
+        ESP_LOGE("LOGIN", "Signature don't match");
+        ret = 1;
+        goto exitfn;
+    }
 
     // Set Session rnonce
     session.rnonce = strtoull(nonce_data, NULL, 10);
@@ -212,6 +315,42 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
+    json_item = cJSON_GetObjectItem(session.login_obj, "l");
+    if(json_item == NULL) {
+        ESP_LOGE("LOGIN", "Login object hasn't [l] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("LOGIN", "JSON entry [l] isn't string type");
+        ret = 1;
+        goto exitfn;
+    }
+    // Check login mac
+    olen = sizeof(lmac);
+    if(mbedtls_base64_decode(lmac, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
+       0) {
+        ESP_LOGE("LOGIN", "Error decoding MAC address");
+        ret = 1;
+        goto exitfn;
+    }
+    if(olen != 6) {
+        ESP_LOGE("CMD", "MAC address size isn't 6 bytes long");
+        ret = 1;
+        goto exitfn;
+    }
+    mac = esp_bt_dev_get_address();
+    if(mac == NULL) {
+        ESP_LOGE("CMD", "Unable to read bluetooth MAC address");
+        ret = 1;
+        goto exitfn;
+    }
+    if(memcmp(lmac, mac, 6) != 0) {
+        ESP_LOGE("CMD", "MAC address don't match");
+        ret = 1;
+        goto exitfn;
+    }
+
     json_item = cJSON_GetObjectItem(session.login_obj, "v");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "Login object hasn't [v] entry");
@@ -224,39 +363,6 @@ static int do_login(const char* cmd) {
         goto exitfn;
     }
     session.key_version = json_item->valueint;
-
-    if(config.key_version == 0) {
-        if(session.key_version < 1) {
-            ESP_LOGE("LOGIN", "lock is unformated and v <  1");
-            ret = 1;
-            goto exitfn;
-        }
-        json_item = cJSON_GetObjectItem(session.login_obj, "m");
-        if(json_item == NULL) {
-            ESP_LOGE("LOGIN", "Login object hasn't [m] entry and lock is unformated");
-            ret = 1;
-            goto exitfn;
-        }
-        if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("LOGIN", "JSON entry [m] isn't string type");
-            ret = 1;
-            goto exitfn;
-        }
-        if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
-                                 strlen(json_item->valuestring)) != 0) {
-            ESP_LOGE("LOGIN", "Error decoding master key.");
-            ret = 1;
-            goto exitfn;
-        }
-        if(olen != sizeof(config.master_key)) {
-            ESP_LOGE("LOGIN", "Master key size mismatch: %d != %d", olen, sizeof(config.master_key));
-            ret = 1;
-            goto exitfn;
-        }
-        config.key_version = session.key_version;
-        save_flash_config();
-        session.smart_reboot = true;
-    }
 
     json_resp = cJSON_CreateObject();
     if(session.key_version < config.key_version) {
@@ -471,7 +577,11 @@ static int cmd_cb(const char* cmd, size_t size) {
         ;
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
     if(!session.login) {
-        ret = do_login(cmd);
+        if(config.key_version == 0) {
+            ret = do_init_config(cmd);
+        } else {
+            ret = do_login(cmd);
+        }
     } else {
         ret = do_cmd(cmd);
         if(ret == 0 && config.key_version < session.key_version) {

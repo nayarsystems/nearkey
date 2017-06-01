@@ -158,6 +158,45 @@ exitfn:
     return res;
 }
 
+static int chk_cmd_access(const char* cmd) {
+    int ret = 0;
+    int cmdl_size = 0;
+
+    cJSON* cmd_list = NULL;
+    cJSON* cmd_entry = NULL;
+
+    cmd_list = cJSON_GetObjectItem(session.login_obj, "a");
+    if(cmd_list == NULL) {
+        ESP_LOGW("CMD", "There isn't command access list, all commands denied by default");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(cmd_list->type & cJSON_Array)) {
+        ESP_LOGE("CMD", "Access login is not array type");
+        ret = 1;
+        goto exitfn;
+    }
+    cmdl_size = cJSON_GetArraySize(cmd_list);
+    for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
+        cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
+        if(cmd_entry == NULL) {
+            ESP_LOGE("CMD", "Unexpexted end of command array");
+            ret = 1;
+            goto exitfn;
+        }
+        if(cmd_entry->type == cJSON_String) {
+            if(strcmp(cmd, cmd_entry->valuestring) == 0) {
+                ret = 0;
+                goto exitfn;
+            }
+        }
+    }
+    ret = 1;
+
+exitfn:
+    return ret;
+}
+
 static int do_init_config(const char* cmd) {
     int ret = 0;
     size_t olen;
@@ -362,20 +401,6 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    session.key_version = json_item->valueint;
-
-    json_resp = cJSON_CreateObject();
-    if(session.key_version < config.key_version) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
-        cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
-        ret = 2;
-        goto exitresp;
-    }
-
-    cJSON_AddStringToObject(json_resp, "r", "ok");
-    session.login = true;
-
-exitresp:
     // Calculate derived key
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
@@ -385,19 +410,32 @@ exitresp:
     mbedtls_sha256_free(&sha256_ctx);
     bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
     ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
-    if(respond(json_resp, true) != 0) {
-        ESP_LOGE("LOGIN", "Fail sending response");
-        ret = 1;
+
+    session.key_version = json_item->valueint;
+
+    json_resp = cJSON_CreateObject();
+    if(session.key_version < config.key_version) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
+        cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
+        ret = 2;
         goto exitfn;
     }
+
+    cJSON_AddStringToObject(json_resp, "r", "ok");
+    session.login = true;
 
 exitfn:
     if(sl != NULL) {
         str_list_free(sl);
     }
     if(json_resp != NULL) {
+        if(respond(json_resp, true) != 0) {
+            ESP_LOGE("LOGIN", "Fail sending response");
+            ret = 1;
+        }
         cJSON_Delete(json_resp);
     }
+
     return ret;
 }
 
@@ -488,34 +526,34 @@ static int do_cmd(const char* cmd) {
     if(strcmp(cmd_str, "q") == 0) { // Quit
         session.conn_timeout = 2;
         session.login = false;
-        cJSON_AddStringToObject(json_resp, "r", "ok");
         ret = 2;
-        goto exitresp;
+        goto exitok;
     }
     if(strcmp(cmd_str, "n") == 0) { // Nop
-        cJSON_AddStringToObject(json_resp, "r", "ok");
         ret = 0;
-        goto exitresp;
+        goto exitok;
+    }
+
+    if(chk_cmd_access(cmd_str) != 0) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_PERMISSION_DENIED);
+        cJSON_AddStringToObject(json_resp, "d", ERR_PERMISSION_DENIED_S);
+        ret = 2;
+        goto exitfn;
     }
 
     if(strcmp(cmd_str, "a0") == 0) { // Actuator
-        cJSON_AddStringToObject(json_resp, "r", "ok");
         act0_tm = DEF_ACT_TIMEOUT;
         ret = 0;
-        goto exitresp;
+        goto exitok;
     }
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
     ret = 2;
+    goto exitfn;
 
-exitresp:
-    if(respond(json_resp, false) != 0) {
-        ESP_LOGE("LOGIN", "Fail sending response");
-        ret = 1;
-        goto exitfn;
-    }
-
+exitok:
+    cJSON_AddStringToObject(json_resp, "r", "ok");
 exitfn:
     if(sl != NULL) {
         str_list_free(sl);
@@ -524,6 +562,10 @@ exitfn:
         cJSON_Delete(json_cmd);
     }
     if(json_resp != NULL) {
+        if(respond(json_resp, true) != 0) {
+            ESP_LOGE("LOGIN", "Fail sending response");
+            ret = 1;
+        }
         cJSON_Delete(json_resp);
     }
     return ret;

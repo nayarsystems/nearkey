@@ -27,6 +27,11 @@
 
 #define LOG_TAG "MAIN"
 
+// GPIO
+#define ACTUATOR_0 32
+#define ACTUATOR_1 33
+#define RESET_BUTTON 34
+
 // Errors
 #define ERR_OLD_KEY_VERSION 1
 #define ERR_OLD_KEY_VERSION_S "Old Key version"
@@ -740,8 +745,9 @@ static void setup_gpio() {
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
     // set as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
-    // bit mask of the pins that you want to set,e.g.GPIO18/19
-    io_conf.pin_bit_mask = (1 << 23);
+    // bit mask of the pins that you want to set
+    // io_conf.pin_bit_mask = (1 << 23);
+    io_conf.pin_bit_mask = ((uint64_t)1 << ACTUATOR_0);
     // disable pull-down mode
     io_conf.pull_down_en = 0;
     // disable pull-up mode
@@ -754,21 +760,22 @@ static void setup_gpio() {
     // set as input mode
     io_conf.mode = GPIO_MODE_INPUT;
     // bit mask of the pins that you want to set,e.g.GPIO18/19
-    io_conf.pin_bit_mask = (1 << 0);
+    // io_conf.pin_bit_mask = (1 << 0);
+    io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON);
     // disable pull-down mode
     io_conf.pull_down_en = 0;
     // disable pull-up mode
-    io_conf.pull_up_en = 1;
+    io_conf.pull_up_en = 0;
     // configure GPIO with the given settings
     gpio_config(&io_conf);
 }
 
 static void set_actuator(int st) {
-    gpio_set_level(23, st);
+    gpio_set_level(ACTUATOR_0, st);
 }
 
 static int get_reset_button() {
-    return gpio_get_level(0);
+    return gpio_get_level(RESET_BUTTON);
 }
 
 void app_main(void) {

@@ -1,8 +1,10 @@
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -404,7 +406,8 @@ static int do_login(const char* cmd) {
     // Calculate derived key
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(sl->s));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(json_data));
+    mbedtls_sha256_update(&sha256_ctx, sig_calc, sizeof(sig_calc));
     mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
     mbedtls_sha256_finish(&sha256_ctx, session.derived_key);
     mbedtls_sha256_free(&sha256_ctx);

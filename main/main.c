@@ -115,7 +115,7 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(cJSON* resp, bool add_nonce) {
+static int respond(cJSON* resp, bool add_nounce, bool add_signature) {
     int res = 0;
     char* json_str = NULL;
     char* sign_str = NULL;
@@ -126,7 +126,7 @@ static int respond(cJSON* resp, bool add_nonce) {
     size_t olen = 0;
 
     // Append n and x nonce fields
-    if(add_nonce) {
+    if(add_nounce) {
         snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
         cJSON_AddStringToObject(resp, "n", nonce_str);
     }
@@ -136,25 +136,28 @@ static int respond(cJSON* resp, bool add_nonce) {
         res = 1;
         goto exitfn;
     }
-
-    // Compute signature
-    snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
-    session.rnonce++; // Increment rnonce for next response
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_str, strlen(json_str));
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
-    mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
-    mbedtls_sha256_finish(&sha256_ctx, sign_bin);
-    mbedtls_sha256_free(&sha256_ctx);
-    mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
-    sign_str = calloc(1, olen + 1);
-    if(sign_str == NULL) {
-        res = 1;
-        goto exitfn;
+    if(add_signature) {
+        // Compute signature
+        snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
+        session.rnonce++; // Increment rnonce for next response
+        mbedtls_sha256_init(&sha256_ctx);
+        mbedtls_sha256_starts(&sha256_ctx, 0);
+        mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_str, strlen(json_str));
+        mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
+        mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
+        mbedtls_sha256_finish(&sha256_ctx, sign_bin);
+        mbedtls_sha256_free(&sha256_ctx);
+        mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
+        sign_str = calloc(1, olen + 1);
+        if(sign_str == NULL) {
+            res = 1;
+            goto exitfn;
+        }
+        mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
+        asprintf(&res_str, "%s~%s", json_str, sign_str);
+    } else {
+        asprintf(&res_str, "%s", json_str);
     }
-    mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
-    asprintf(&res_str, "%s~%s", json_str, sign_str);
     gatts_send_response(res_str);
     ESP_LOGI("RESPOND", "Raw response: %s", res_str);
 
@@ -215,6 +218,7 @@ static int do_init_config(const char* cmd) {
     size_t olen;
     cJSON* json_obj = NULL;
     cJSON* json_item = NULL;
+    cJSON* json_resp = NULL;
 
     json_obj = cJSON_Parse(cmd);
     if(json_obj == NULL) {
@@ -269,7 +273,9 @@ static int do_init_config(const char* cmd) {
     save_flash_config();
     session.smart_reboot = true;
 
-    gatts_send_response("{\"r\":\"ok\"}");
+    json_resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(json_resp, "r", "ok");
+    cJSON_AddNumberToObject(json_resp, "a", num_actuators);
     session.conn_timeout = 10;
     ret = 2;
 
@@ -277,6 +283,14 @@ exitfn:
     if(json_obj != NULL) {
         cJSON_Delete(json_obj);
     }
+    if(json_resp != NULL) {
+        if(respond(json_resp, false, false) != 0) {
+            ESP_LOGE("CONFIG", "Fail sending response");
+            ret = 1;
+        }
+        cJSON_Delete(json_resp);
+    }
+
     return ret;
 }
 
@@ -443,7 +457,7 @@ exitfn:
         str_list_free(sl);
     }
     if(json_resp != NULL) {
-        if(respond(json_resp, true) != 0) {
+        if(respond(json_resp, true, true) != 0) {
             ESP_LOGE("LOGIN", "Fail sending response");
             ret = 1;
         }
@@ -583,7 +597,7 @@ exitfn:
         cJSON_Delete(json_cmd);
     }
     if(json_resp != NULL) {
-        if(respond(json_resp, true) != 0) {
+        if(respond(json_resp, false, true) != 0) {
             ESP_LOGE("LOGIN", "Fail sending response");
             ret = 1;
         }

@@ -27,10 +27,16 @@
 
 #define LOG_TAG "MAIN"
 
-// GPIO
-#define ACTUATOR_0 32
-#define ACTUATOR_1 33
-#define RESET_BUTTON 34
+// Boards config
+#ifdef CONFIG_VK_BOARD_OLIMEX_EVB
+#define ACTUATORS_GPIO \
+    { 32, 33 }
+#define RESET_BUTTON_GPIO 34
+#endif
+
+static int const actuators[] = ACTUATORS_GPIO;
+#define num_actuators (sizeof(actuators) / sizeof(actuators[0]))
+// --- End Boards config
 
 // Errors
 #define ERR_OLD_KEY_VERSION 1
@@ -43,6 +49,8 @@
 
 // Function definitions
 static esp_err_t save_flash_config();
+static void set_actuator(int act, int st);
+static void clear_all_actuators();
 // --- End Function definitions
 
 // Config stuff
@@ -60,7 +68,7 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
-#define DEF_CONN_TIMEOUT 50
+#define DEF_CONN_TIMEOUT 30
 static struct session_s {
     SemaphoreHandle_t sem;
     uint32_t key_version;
@@ -77,8 +85,8 @@ static struct session_s {
 // --- End Session stuff
 
 // Actuator timers
-#define DEF_ACT_TIMEOUT 30
-static uint32_t act0_tm;
+#define DEF_ACT_TIMEOUT 10
+static uint32_t act_tim;
 // --- End Actuator timers
 
 // Reset timer
@@ -128,11 +136,9 @@ static int respond(cJSON* resp, bool add_nonce) {
         res = 1;
         goto exitfn;
     }
-    ESP_LOGI("RESPOND", "JSON response: %s", json_str);
 
     // Compute signature
     snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
-    ESP_LOGI("RESPOND", "Responding with nonce: \"%s\"", nonce_str);
     session.rnonce++; // Increment rnonce for next response
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
@@ -476,7 +482,6 @@ static int do_cmd(const char* cmd) {
 
     // Calculate signature
     snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
-    ESP_LOGE("CMD", "Nonce esperado: %s", nonce_str);
     session.nonce++; // Increment nonce for next command
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
@@ -549,8 +554,16 @@ static int do_cmd(const char* cmd) {
         goto exitfn;
     }
 
-    if(strcmp(cmd_str, "a0") == 0) { // Actuator
-        act0_tm = DEF_ACT_TIMEOUT;
+    if(strlen(cmd_str) >= 2 && cmd_str[0] == 'a' && cmd_str[1] >= '0' && cmd_str[1] <= '9') { // Actuator
+        int n = atoi(&cmd_str[1]);
+        if(n >= 0 && n < num_actuators) {
+            act_tim = DEF_ACT_TIMEOUT;
+            clear_all_actuators();
+            set_actuator(n, 1);
+            ESP_LOGI("CMD", "shoting actuator %d", n);
+        } else {
+            ESP_LOGE("CMD", "actuator %d out of range", n);
+        }
         ret = 0;
         goto exitok;
     }
@@ -740,14 +753,16 @@ exitfn:
 }
 
 static void setup_gpio() {
-    gpio_config_t io_conf;
+    gpio_config_t io_conf = {0};
+
+    // bit mask of the pins that you want to set as outputs
+    for(int n = 0; n < num_actuators; n++) {
+        io_conf.pin_bit_mask |= ((uint64_t)1 << actuators[n]);
+    }
     // disable interrupt
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
     // set as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
-    // bit mask of the pins that you want to set
-    // io_conf.pin_bit_mask = (1 << 23);
-    io_conf.pin_bit_mask = ((uint64_t)1 << ACTUATOR_0);
     // disable pull-down mode
     io_conf.pull_down_en = 0;
     // disable pull-up mode
@@ -755,13 +770,14 @@ static void setup_gpio() {
     // configure GPIO with the given settings
     gpio_config(&io_conf);
 
+    io_conf = (gpio_config_t){0};
     // disable interrupt
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
     // set as input mode
     io_conf.mode = GPIO_MODE_INPUT;
-    // bit mask of the pins that you want to set,e.g.GPIO18/19
+    // bit mask of the pins that you want to set as inputs
     // io_conf.pin_bit_mask = (1 << 0);
-    io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON);
+    io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON_GPIO);
     // disable pull-down mode
     io_conf.pull_down_en = 0;
     // disable pull-up mode
@@ -770,12 +786,20 @@ static void setup_gpio() {
     gpio_config(&io_conf);
 }
 
-static void set_actuator(int st) {
-    gpio_set_level(ACTUATOR_0, st);
+static void set_actuator(int act, int st) {
+    if(act >= 0 && act < num_actuators) {
+        gpio_set_level(actuators[act], st);
+    }
+}
+
+static void clear_all_actuators() {
+    for(int n = 0; n < num_actuators; n++) {
+        set_actuator(n, 0);
+    }
 }
 
 static int get_reset_button() {
-    return gpio_get_level(RESET_BUTTON);
+    return gpio_get_level(RESET_BUTTON_GPIO);
 }
 
 void app_main(void) {
@@ -796,14 +820,16 @@ void app_main(void) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session.sem, portMAX_DELAY))
             ;
-        if(act0_tm > 0) {
-            act0_tm--;
+        if(act_tim > 0) {
+            act_tim--;
+        } else {
+            clear_all_actuators();
         }
-        set_actuator(act0_tm > 0 ? 1 : 0);
 
         if(get_reset_button() == 0) {
             ESP_LOGI(LOG_TAG, "Reset button!!!!");
-            act0_tm = DEF_ACT_TIMEOUT;
+            act_tim = DEF_ACT_TIMEOUT;
+            set_actuator(0, 1);
             reset_tm = DEF_ACT_TIMEOUT + 1;
             erase_on_reset = true;
         }

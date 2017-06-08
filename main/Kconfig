@@ -1,0 +1,18 @@
+menu "Virkey.com config"
+
+choice
+    prompt "Board"
+    help
+        Selects Virkey targer board.
+    config VK_BOARD_OLIMEX_EVB
+        bool "OLIMEX ESP32 EVB"
+        help
+            Selects Olimex ESP32 evaluation board.
+    config VK_BOARD_OLIMEX_CORE
+        bool "OLIMEX ESP32 CoreBoard"
+        help
+            Selects Olimex ESP32 core board.
+            
+endchoice
+
+endmenu

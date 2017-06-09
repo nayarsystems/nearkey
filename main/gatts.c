@@ -408,6 +408,14 @@ esp_err_t gatts_close_connection() {
     return ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t gatts_start_adv() {
+    return esp_ble_gap_start_advertising(&test_adv_params);
+}
+
+esp_err_t gatts_stop_adv() {
+    return esp_ble_gap_stop_advertising();
+}
+
 ssize_t gatts_send_response(const char* resp) {
     if(!gl_profile_tab[PROFILE_A_APP_ID].connected) {
         return 0;

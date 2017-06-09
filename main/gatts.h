@@ -11,3 +11,5 @@ int init_gatts(gatts_connect_cb_t conn_cb,
 
 esp_err_t gatts_close_connection();
 ssize_t gatts_send_response(const char* resp);
+esp_err_t gatts_start_adv();
+esp_err_t gatts_stop_adv();

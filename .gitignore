@@ -1,0 +1,5 @@
+.vscode/
+build/
+sdkconfig.defaults
+sdkconfig.old
+virkey.project

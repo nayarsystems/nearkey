@@ -612,6 +612,8 @@ static int connect_cb(const esp_bd_addr_t addr) {
     while(!xSemaphoreTake(session.sem, portMAX_DELAY))
         ;
     if(session.connected) {
+        ESP_LOGE(LOG_TAG, "DEVICE BUSY Connection attempt from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0],
+                 session.address[1], session.address[2], session.address[3], session.address[4], session.address[5]);
         ret = 1;
         goto exitfn;
     }

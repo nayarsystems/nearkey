@@ -63,6 +63,8 @@ static struct config_s {
     uint8_t master_key[32];
 } __attribute__((packed)) config;
 
+static bool access_chg;
+static uint32_t access[500];
 static nvs_handle nvs_config_h;
 // --- End Config stuff
 
@@ -690,8 +692,64 @@ static esp_err_t init_flash() {
         ESP_ERROR_CHECK(esp_partition_erase_range(nvs_partition, 0, nvs_partition->size));
         // Retry nvs_flash_init
         err = nvs_flash_init();
+        if (err != ESP_OK){
+            goto fail;
+        }
     }
+fail:
     return err;
+}
+
+static esp_err_t load_access_data(){
+    esp_err_t err = ESP_OK;
+    size_t size;
+
+    access_chg = false;
+    err = nvs_get_blob(nvs_config_h, "access", NULL, &size); // Get blob size
+    if(err != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "Error (%d) reading access data (getting blob size)", err);
+        goto fail;
+    }
+    if(size != sizeof(access)){
+        ESP_LOGE(LOG_TAG, "access data size dont match (%d != %d", size, sizeof(access));
+    }
+    err = nvs_get_blob(nvs_config_h, "access", access, &size);
+    if(err != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "Error (%d) reading access data", err);
+    }
+    if(size != sizeof(access)){
+        ESP_LOGE(LOG_TAG, "access data size dont match (%d != %d", size, sizeof(access));
+    }
+fail:
+    return err;
+}
+
+static esp_err_t save_access_data(){
+    esp_err_t err = ESP_OK;
+
+    if (access_chg){
+        err = nvs_set_blob(nvs_config_h, "access", access, sizeof(access));
+        if (err != ESP_OK){
+            ESP_LOGE(LOG_TAG, "Error (%d) writing access data", err);
+            goto fail;
+        }
+        access_chg = false;
+        err = nvs_commit(nvs_config_h);
+        if(err != ESP_OK){
+            ESP_LOGE(LOG_TAG, "Error (%d) writing access data (commit)", err);
+            goto fail;
+        }
+    }
+fail:
+    return err;
+}
+
+static esp_err_t set_access_data(size_t idx, uint32_t ts){
+    if (access[idx] < ts){
+        access[idx] = ts;
+        access_chg = true;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t save_flash_config() {
@@ -722,12 +780,20 @@ static esp_err_t reset_flash_config() {
     config.key_version = 0;
     memset(config.master_key, 0, sizeof(config.master_key));
     err = save_flash_config();
+    if(err != ESP_OK){
+        goto fail;
+    }
+    memset(access, 0, sizeof(access));
+    access_chg = true;
+    err = save_access_data();
+fail:
     return err;
 }
 
 static esp_err_t load_flash_config() {
-
-    esp_err_t err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
+    esp_err_t err = ESP_OK;
+    
+    err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
     if(err != ESP_OK) {
         ESP_LOGE(LOG_TAG, "Error (%d) opening nvs config handle", err);
         goto exitfn;
@@ -827,6 +893,7 @@ void app_main(void) {
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
+    ESP_ERROR_CHECK(load_access_data());
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 

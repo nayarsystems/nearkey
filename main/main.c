@@ -64,7 +64,7 @@ static struct config_s {
 } __attribute__((packed)) config;
 
 static bool access_chg;
-static uint32_t access[500];
+static uint32_t access[1000];
 static nvs_handle nvs_config_h;
 // --- End Config stuff
 
@@ -710,12 +710,10 @@ static esp_err_t load_access_data(){
         ESP_LOGE(LOG_TAG, "Error (%d) reading access data (getting blob size)", err);
         goto fail;
     }
-    if(size != sizeof(access)){
-        ESP_LOGE(LOG_TAG, "access data size dont match (%d != %d", size, sizeof(access));
-    }
     err = nvs_get_blob(nvs_config_h, "access", access, &size);
     if(err != ESP_OK) {
         ESP_LOGE(LOG_TAG, "Error (%d) reading access data", err);
+        goto fail;
     }
     if(size != sizeof(access)){
         ESP_LOGE(LOG_TAG, "access data size dont match (%d != %d", size, sizeof(access));

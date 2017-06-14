@@ -47,24 +47,26 @@ static int const actuators[] = ACTUATORS_GPIO;
 #define ERR_UNKNOWN_COMMAND_S "Unknown command"
 // --- End Errors
 
-// Function definitions
+// Function declarations
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static void clear_all_actuators();
+static esp_err_t save_access_data();
+static int set_access_data(uint32_t idx, uint32_t ts);
 // --- End Function definitions
 
 // Config stuff
-#define CFG_VERSION 2
+#define CFG_VERSION 3
+#define MAX_ACCESS_ENTRIES 1000
 
 static struct config_s {
     uint32_t cfg_version;
-    uint32_t key_version;
-    uint32_t cmd_version;
+    uint32_t cfg_setup;
     uint8_t master_key[32];
 } __attribute__((packed)) config;
 
 static bool access_chg;
-static uint32_t access[1000];
+static uint32_t access[MAX_ACCESS_ENTRIES];
 static nvs_handle nvs_config_h;
 // --- End Config stuff
 
@@ -74,6 +76,7 @@ static nvs_handle nvs_config_h;
 static struct session_s {
     SemaphoreHandle_t sem;
     uint32_t key_version;
+    uint32_t key_id;
     uint8_t derived_key[32];
     cJSON* login_obj;
     uint64_t nonce;
@@ -271,13 +274,14 @@ static int do_init_config(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    config.key_version = 1;
+    config.cfg_setup = 1;
     save_flash_config();
     session.smart_reboot = true;
 
     json_resp = cJSON_CreateObject();
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", num_actuators);
+    cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
     session.conn_timeout = 10;
     ret = 2;
 
@@ -430,6 +434,21 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
+    session.key_version = json_item->valueint;
+
+    json_item = cJSON_GetObjectItem(session.login_obj, "u");
+    if(json_item == NULL) {
+        ESP_LOGE("LOGIN", "Login object hasn't [u] entry");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_Number)) {
+        ESP_LOGE("LOGIN", "JSON entry [u] isn't number type");
+        ret = 1;
+        goto exitfn;
+    }
+    session.key_id = json_item->valueint;
+
     // Calculate derived key
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
@@ -441,10 +460,9 @@ static int do_login(const char* cmd) {
     bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
     ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
 
-    session.key_version = json_item->valueint;
-
     json_resp = cJSON_CreateObject();
-    if(session.key_version < config.key_version) {
+    // Check key validity 
+    if (set_access_data(session.key_id, session.key_version) < 0){
         cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
         cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
         ret = 2;
@@ -636,6 +654,7 @@ static int disconnect_cb(const esp_bd_addr_t addr) {
 
     while(!xSemaphoreTake(session.sem, portMAX_DELAY))
         ;
+    save_access_data();
     if(!session.connected) {
         ret = 1;
         goto exitfn;
@@ -658,18 +677,13 @@ static int cmd_cb(const char* cmd, size_t size) {
         ;
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
     if(!session.login) {
-        if(config.key_version == 0) {
+        if(config.cfg_setup == 0) {
             ret = do_init_config(cmd);
         } else {
             ret = do_login(cmd);
         }
     } else {
         ret = do_cmd(cmd);
-        if(ret == 0 && config.key_version < session.key_version) {
-            config.key_version = session.key_version;
-            save_flash_config();
-            session.smart_reboot = true;
-        }
     }
     if(ret == 0) {
         session.conn_timeout = DEF_CONN_TIMEOUT;
@@ -731,23 +745,30 @@ static esp_err_t save_access_data(){
             ESP_LOGE(LOG_TAG, "Error (%d) writing access data", err);
             goto fail;
         }
-        access_chg = false;
         err = nvs_commit(nvs_config_h);
         if(err != ESP_OK){
             ESP_LOGE(LOG_TAG, "Error (%d) writing access data (commit)", err);
             goto fail;
         }
+        access_chg = false;
     }
 fail:
     return err;
 }
 
-static esp_err_t set_access_data(size_t idx, uint32_t ts){
-    if (access[idx] < ts){
+static int set_access_data(uint32_t idx, uint32_t ts){
+    int ret = -1;
+
+    if (idx >= MAX_ACCESS_ENTRIES) {
+        ret = -1;
+    } else if (access[idx] == ts){
+        ret = 0;
+    } else if (access[idx] < ts){
         access[idx] = ts;
         access_chg = true;
+        ret = 1;
     }
-    return ESP_OK;
+    return ret;
 }
 
 static esp_err_t save_flash_config() {
@@ -775,7 +796,7 @@ static esp_err_t reset_flash_config() {
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
-    config.key_version = 0;
+    config.cfg_setup = 0;
     memset(config.master_key, 0, sizeof(config.master_key));
     err = save_flash_config();
     if(err != ESP_OK){
@@ -895,7 +916,7 @@ void app_main(void) {
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.key_version));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.cfg_setup));
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);

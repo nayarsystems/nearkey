@@ -487,6 +487,97 @@ exitfn:
     return ret;
 }
 
+static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
+    int ret = 0;
+    cJSON* login_obj = NULL;
+    cJSON* json_item = NULL;
+    char* login_JSON_str = NULL;
+    char* login_b64_str = NULL;
+    char* login_sig_str = NULL;
+    char* login_dkey_str = NULL;
+    mbedtls_sha256_context sha256_ctx = {};
+    uint8_t sig_calc[32] = {0};
+    size_t olen = 0;
+
+    login_obj = cJSON_Duplicate(session.login_obj, 1);
+    json_item = cJSON_GetObjectItem(login_obj, "v");
+    json_item->valueint++;
+    json_item->valuedouble++;
+    login_JSON_str = cJSON_PrintUnformatted(login_obj);
+    // Calculate login signature
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)login_JSON_str, strlen(login_JSON_str));
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)"virkey.com", 10);
+    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
+    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
+    mbedtls_sha256_free(&sha256_ctx);
+
+    mbedtls_base64_encode(NULL, 0, &olen, sig_calc, sizeof(sig_calc));
+    login_sig_str = calloc(1, olen + 1);
+    if(login_sig_str == NULL) {
+        ret = 1;
+        goto exitfn;
+    }
+    mbedtls_base64_encode((uint8_t*)login_sig_str, olen, &olen, sig_calc, sizeof(sig_calc));
+
+    // Calculate derived key
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)login_JSON_str, strlen(login_JSON_str));
+    mbedtls_sha256_update(&sha256_ctx, sig_calc, sizeof(sig_calc));
+    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
+    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
+    mbedtls_sha256_free(&sha256_ctx);
+
+    // Encrypt derived key with session derived key
+    for(int i = 0; i < sizeof(sig_calc); i++){
+        sig_calc[i] = sig_calc[i] ^ session.derived_key[i];
+    }
+    mbedtls_base64_encode(NULL, 0, &olen, sig_calc, sizeof(sig_calc));
+    login_dkey_str = calloc(1, olen + 1);
+    if(login_dkey_str == NULL) {
+        ret = 1;
+        goto exitfn;
+    }
+    mbedtls_base64_encode((uint8_t*)login_dkey_str, olen, &olen, sig_calc, sizeof(sig_calc));
+
+    // Convert login JSON data to base64
+    mbedtls_base64_encode(NULL, 0, &olen, (uint8_t*)login_JSON_str, strlen(login_JSON_str));
+    login_b64_str = calloc(1, olen + 1);
+    if(login_b64_str == NULL) {
+        ret = 1;
+        goto exitfn;
+    }
+    mbedtls_base64_encode((uint8_t*)login_b64_str, olen, &olen, (uint8_t*)login_JSON_str, strlen(login_JSON_str));
+
+    
+    cJSON *robject = cJSON_CreateObject();
+    cJSON_AddStringToObject(robject, "login", login_b64_str);
+    cJSON_AddStringToObject(robject, "sig", login_sig_str);
+    cJSON_AddStringToObject(robject, "dkey", login_dkey_str);
+    cJSON_AddItemToObject(json_resp, "r", robject);
+
+
+exitfn:
+    if(login_JSON_str != NULL) {
+        free(login_JSON_str);
+    }
+    if(login_b64_str != NULL) {
+        free(login_b64_str);
+    }
+    if(login_sig_str != NULL) {
+        free(login_sig_str);
+    }
+    if(login_dkey_str != NULL) {
+        free(login_dkey_str);
+    }
+    if(login_obj != NULL) {
+        cJSON_Delete(login_obj);
+    }
+    return ret;
+}
+
 static int do_cmd(const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
@@ -501,6 +592,7 @@ static int do_cmd(const char* cmd) {
     cJSON* json_cmd = NULL;
     cJSON* json_item = NULL;
     cJSON* json_resp = NULL;
+
 
     ESP_LOGI("CMD", "raw cmd: %s", cmd);
     sl = pl = str_split_safe(cmd, "~");
@@ -581,6 +673,11 @@ static int do_cmd(const char* cmd) {
         goto exitok;
     }
 
+    if (strcmp(cmd_str, "u") == 0){
+        ret = do_cmd_key_upgrade(cmd, json_resp);
+        goto exitfn;
+    }
+
     if(chk_cmd_access(cmd_str) != 0) {
         cJSON_AddNumberToObject(json_resp, "e", ERR_PERMISSION_DENIED);
         cJSON_AddStringToObject(json_resp, "d", ERR_PERMISSION_DENIED_S);
@@ -601,6 +698,7 @@ static int do_cmd(const char* cmd) {
         ret = 0;
         goto exitok;
     }
+
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);

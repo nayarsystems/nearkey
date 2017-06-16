@@ -72,9 +72,10 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
-#define DEF_CONN_TIMEOUT 30
+#define INI_CONN_TIMEOUT 25
+#define DEF_CONN_TIMEOUT 100
+SemaphoreHandle_t session_sem;
 static struct session_s {
-    SemaphoreHandle_t sem;
     uint32_t key_version;
     uint32_t key_id;
     uint8_t derived_key[32];
@@ -82,9 +83,11 @@ static struct session_s {
     uint64_t nonce;
     uint64_t rnonce;
     uint8_t address[6];
-    bool login;
     int conn_timeout;
+    bool login;
     bool connected;
+    bool upgrade_on_bye;
+    bool upgrade_on_close;
     bool smart_reboot;
 } session;
 // --- End Session stuff
@@ -503,6 +506,39 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
     json_item = cJSON_GetObjectItem(login_obj, "v");
     json_item->valueint++;
     json_item->valuedouble++;
+
+    // Remove "u" from permissions
+    cJSON* cmd_list = NULL;
+    cJSON* cmd_entry = NULL;
+    int cmdl_size;
+    cmd_list = cJSON_GetObjectItem(login_obj, "a");
+    if(cmd_list == NULL) {
+        ESP_LOGW("CMD_UPGRADE", "There isn't command access list, all commands denied by default");
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(cmd_list->type & cJSON_Array)) {
+        ESP_LOGE("CMD_UPGRADE", "Access login is not array type");
+        ret = 1;
+        goto exitfn;
+    }
+    cmdl_size = cJSON_GetArraySize(cmd_list);
+    for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
+        cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
+        if(cmd_entry == NULL) {
+            ESP_LOGE("CMD_UPGRADE", "Unexpexted end of command array");
+            ret = 1;
+            goto exitfn;
+        }
+        if(cmd_entry->type == cJSON_String) {
+            if(strcmp("u", cmd_entry->valuestring) == 0) {
+                cJSON_DeleteItemFromArray(cmd_list, cmd_idx);
+                break;
+            }
+        }
+    }
+
+
     login_JSON_str = cJSON_PrintUnformatted(login_obj);
     // Calculate login signature
     mbedtls_sha256_init(&sha256_ctx);
@@ -534,6 +570,7 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
     for(int i = 0; i < sizeof(sig_calc); i++){
         sig_calc[i] = sig_calc[i] ^ session.derived_key[i];
     }
+
     mbedtls_base64_encode(NULL, 0, &olen, sig_calc, sizeof(sig_calc));
     login_dkey_str = calloc(1, olen + 1);
     if(login_dkey_str == NULL) {
@@ -557,6 +594,8 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
     cJSON_AddStringToObject(robject, "sig", login_sig_str);
     cJSON_AddStringToObject(robject, "dkey", login_dkey_str);
     cJSON_AddItemToObject(json_resp, "r", robject);
+
+    session.upgrade_on_bye = true;
 
 
 exitfn:
@@ -665,17 +704,17 @@ static int do_cmd(const char* cmd) {
     if(strcmp(cmd_str, "q") == 0) { // Quit
         session.conn_timeout = 2;
         session.login = false;
+        if (session.upgrade_on_bye) {
+            session.upgrade_on_bye = false;
+            set_access_data(session.key_id, session.key_version + 1);
+        }
         ret = 2;
         goto exitok;
     }
+
     if(strcmp(cmd_str, "n") == 0) { // Nop
         ret = 0;
         goto exitok;
-    }
-
-    if (strcmp(cmd_str, "u") == 0){
-        ret = do_cmd_key_upgrade(cmd, json_resp);
-        goto exitfn;
     }
 
     if(chk_cmd_access(cmd_str) != 0) {
@@ -699,6 +738,10 @@ static int do_cmd(const char* cmd) {
         goto exitok;
     }
 
+    if (strcmp(cmd_str, "u") == 0 || strcmp(cmd_str, "U") == 0){
+        ret = do_cmd_key_upgrade(cmd, json_resp);
+        goto exitfn;
+    }
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
@@ -727,7 +770,7 @@ exitfn:
 static int connect_cb(const esp_bd_addr_t addr) {
     int ret = 0;
 
-    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
     if(session.connected) {
         ESP_LOGE(LOG_TAG, "DEVICE BUSY Connection attempt from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0],
@@ -735,44 +778,52 @@ static int connect_cb(const esp_bd_addr_t addr) {
         ret = 1;
         goto exitfn;
     }
+    memset(&session, 0, sizeof(session));
     memcpy(&session.address, addr, sizeof(session.address));
-    session.conn_timeout = DEF_CONN_TIMEOUT;
+    session.conn_timeout = INI_CONN_TIMEOUT;
     session.connected = true;
     session.nonce = esp_random();
-    session.login = false;
     ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
 exitfn:
-    xSemaphoreGive(session.sem);
+    xSemaphoreGive(session_sem);
     return ret;
 }
 
 static int disconnect_cb(const esp_bd_addr_t addr) {
     int ret = 0;
 
-    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    save_access_data();
     if(!session.connected) {
         ret = 1;
         goto exitfn;
     }
+    if (session.upgrade_on_close) {
+        set_access_data(session.key_id, session.key_version + 1);
+    }
+    save_access_data();
     session.connected = false;
+    SETPTR_cJSON(session.login_obj, NULL); // Free login JSON data
     ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
              session.address[2], session.address[3], session.address[4], session.address[5]);
 exitfn:
     if(session.smart_reboot) {
         reset_tm = 1;
     }
-    xSemaphoreGive(session.sem);
+    ESP_LOGI(LOG_TAG,"Free heap size: %d", esp_get_free_heap_size());
+    xSemaphoreGive(session_sem);
     return ret;
 }
 
 static int cmd_cb(const char* cmd, size_t size) {
     int ret = 0;
 
-    while(!xSemaphoreTake(session.sem, portMAX_DELAY))
-        ;
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY));
+    if(!session.connected) {
+        ret = 1;
+        goto exitfn;
+    }
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
     if(!session.login) {
         if(config.cfg_setup == 0) {
@@ -788,8 +839,8 @@ static int cmd_cb(const char* cmd, size_t size) {
     } else if(ret == 2) {
         ret = 0;
     }
-
-    xSemaphoreGive(session.sem);
+exitfn:
+    xSemaphoreGive(session_sem);
     return ret;
 }
 
@@ -1005,8 +1056,8 @@ void app_main(void) {
     char chbuf[65];
 
     ESP_LOGI(LOG_TAG, "Starting virkey...");
-    session.sem = xSemaphoreCreateMutex();
-    xSemaphoreGive(session.sem);
+    session_sem = xSemaphoreCreateMutex();
+    xSemaphoreGive(session_sem);
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
@@ -1018,7 +1069,7 @@ void app_main(void) {
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
-        while(!xSemaphoreTake(session.sem, portMAX_DELAY))
+        while(!xSemaphoreTake(session_sem, portMAX_DELAY))
             ;
         if(act_tim > 0) {
             act_tim--;
@@ -1054,6 +1105,6 @@ void app_main(void) {
             }
         }
 
-        xSemaphoreGive(session.sem);
+        xSemaphoreGive(session_sem);
     }
 }

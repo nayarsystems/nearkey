@@ -72,6 +72,7 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
+#define RX_BUFFER_SIZE 512
 #define INI_CONN_TIMEOUT 30
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
@@ -81,6 +82,7 @@ typedef struct session_s {
     uint32_t key_version;
     uint32_t key_id;
     uint8_t derived_key[32];
+    char *rx_buffer[RX_BUFFER_SIZE];
     cJSON* login_obj;
     uint64_t nonce;
     uint64_t rnonce;
@@ -142,7 +144,7 @@ static int respond(uint16_t conn, cJSON* resp, bool add_nounce, bool add_signatu
     }
     json_str = cJSON_PrintUnformatted(resp);
     if(json_str == NULL) {
-        ESP_LOGE("RESPOND", "Fail encoding JSON data");
+        ESP_LOGE("RESPOND", "[%d] Fail encoding JSON data", conn);
         res = 1;
         goto exitfn;
     }
@@ -169,7 +171,7 @@ static int respond(uint16_t conn, cJSON* resp, bool add_nounce, bool add_signatu
         asprintf(&res_str, "%s\n", json_str);
     }
     gatts_send_response(conn, session[conn].gatts_if, res_str);
-    ESP_LOGI("RESPOND", "Raw response: %s", res_str);
+    ESP_LOGI("RESPOND", "[%d] Raw response: %s", conn, res_str);
 
 exitfn:
     if(json_str != NULL) {
@@ -193,12 +195,12 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
 
     cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "a");
     if(cmd_list == NULL) {
-        ESP_LOGW("CMD", "There isn't command access list, all commands denied by default");
+        ESP_LOGW("CMD", "[%d] There isn't command access list, all commands denied by default", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(cmd_list->type & cJSON_Array)) {
-        ESP_LOGE("CMD", "Access login is not array type");
+        ESP_LOGE("CMD", "[%d] Access login is not array type", conn);
         ret = 1;
         goto exitfn;
     }
@@ -206,7 +208,7 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
     for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
         cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
         if(cmd_entry == NULL) {
-            ESP_LOGE("CMD", "Unexpexted end of command array");
+            ESP_LOGE("CMD", "[%d] Unexpexted end of command array", conn);
             ret = 1;
             goto exitfn;
         }
@@ -232,50 +234,50 @@ static int do_init_config(uint16_t conn, const char* cmd) {
 
     json_obj = cJSON_Parse(cmd);
     if(json_obj == NULL) {
-        ESP_LOGE("CONFIG", "Invalid json data");
+        ESP_LOGE("CONFIG", "[%d] Invalid json data", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_obj->type & cJSON_Object)) {
-        ESP_LOGE("CONFIG", "JSON login is not object type");
+        ESP_LOGE("CONFIG", "[%d] JSON login is not object type", conn);
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(json_obj, "t");
     if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "Login object hasn't [t] entry");
+        ESP_LOGE("CONFIG", "[%d] Login object hasn't [t] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "JSON entry [t] isn't string type");
+        ESP_LOGE("CONFIG", "[%d] JSON entry [t] isn't string type", conn);
         ret = 1;
         goto exitfn;
     }
     if(strcmp(json_item->valuestring, "c") != 0) {
-        ESP_LOGE("CONFIG", "Command must be \"c\" type");
+        ESP_LOGE("CONFIG", "[%d] Command must be \"c\" type", conn);
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(json_obj, "m");
     if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "config command hasn't [m] entry");
+        ESP_LOGE("CONFIG", "[%d] config command hasn't [m] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "JSON entry [m] isn't string type");
+        ESP_LOGE("CONFIG", "[%d] JSON entry [m] isn't string type", conn);
         ret = 1;
         goto exitfn;
     }
     if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
                              strlen(json_item->valuestring)) != 0) {
-        ESP_LOGE("CONFIG", "Error decoding master key.");
+        ESP_LOGE("CONFIG", "[%d] Error decoding master key.", conn);
         ret = 1;
         goto exitfn;
     }
     if(olen != sizeof(config.master_key)) {
-        ESP_LOGE("CONFIG", "Master key size mismatch: %d != %d", olen, sizeof(config.master_key));
+        ESP_LOGE("CONFIG", "[%d] Master key size mismatch: %d != %d", conn, olen, sizeof(config.master_key));
         ret = 1;
         goto exitfn;
     }
@@ -296,7 +298,7 @@ exitfn:
     }
     if(json_resp != NULL) {
         if(respond(conn, json_resp, false, false) != 0) {
-            ESP_LOGE("CONFIG", "Fail sending response");
+            ESP_LOGE("CONFIG", "[%d] Fail sending response", conn);
             ret = 1;
         }
         cJSON_Delete(json_resp);
@@ -323,7 +325,7 @@ static int do_login(uint16_t conn, const char* cmd) {
 
     sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 3) {
-        ESP_LOGE("LOGIN", "Invalid login data (split login_data/signature/nonce)");
+        ESP_LOGE("LOGIN", "[%d] Invalid login data (split login_data/signature/nonce)", conn);
         ret = 1;
         goto exitfn;
     }
@@ -334,7 +336,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     pl = pl->next;
     nonce_data = pl->s;
 
-    ESP_LOGI("LOGIN", "Command: %s", json_data);
+    ESP_LOGI("LOGIN", "[%d] Command: %s", conn, json_data);
 
     // Check login signature
     mbedtls_sha256_init(&sha256_ctx);
@@ -346,17 +348,17 @@ static int do_login(uint16_t conn, const char* cmd) {
     mbedtls_sha256_free(&sha256_ctx);
     olen = sizeof(sig_peer);
     if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
-        ESP_LOGE("LOGIN", "Invalid b64 signature");
+        ESP_LOGE("LOGIN", "[%d] Invalid b64 signature", conn);
         ret = 1;
         goto exitfn;
     }
     if(olen != sizeof(sig_peer)) {
-        ESP_LOGE("LOGIN", "Signature length error");
+        ESP_LOGE("LOGIN", "[%d] Signature length error", conn);
         ret = 1;
         goto exitfn;
     }
     if(memcmp(sig_calc, sig_peer, olen) != 0) {
-        ESP_LOGE("LOGIN", "Signature don't match");
+        ESP_LOGE("LOGIN", "[%d] Signature don't match", conn);
         ret = 1;
         goto exitfn;
     }
@@ -367,39 +369,39 @@ static int do_login(uint16_t conn, const char* cmd) {
     // Decode json_data
     SETPTR_cJSON(session[conn].login_obj, cJSON_Parse(json_data));
     if(session[conn].login_obj == NULL) {
-        ESP_LOGE("LOGIN", "Invalid json data");
+        ESP_LOGE("LOGIN", "[%d] Invalid json data", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(session[conn].login_obj->type & cJSON_Object)) {
-        ESP_LOGE("LOGIN", "JSON login is not object type");
+        ESP_LOGE("LOGIN", "[%d] JSON login is not object type", conn);
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "t");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "Login object hasn't [t] entry");
+        ESP_LOGE("LOGIN", "[%d] Login object hasn't [t] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("LOGIN", "JSON entry [t] isn't string type");
+        ESP_LOGE("LOGIN", "[%d] JSON entry [t] isn't string type", conn);
         ret = 1;
         goto exitfn;
     }
     if(strcmp(json_item->valuestring, "l") != 0) {
-        ESP_LOGE("LOGIN", "First command must be \"l\" type");
+        ESP_LOGE("LOGIN", "[%d] First command must be \"l\" type", conn);
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "l");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "Login object hasn't [l] entry");
+        ESP_LOGE("LOGIN", "[%d] Login object hasn't [l] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("LOGIN", "JSON entry [l] isn't string type");
+        ESP_LOGE("LOGIN", "[%d] JSON entry [l] isn't string type", conn);
         ret = 1;
         goto exitfn;
     }
@@ -407,35 +409,35 @@ static int do_login(uint16_t conn, const char* cmd) {
     olen = sizeof(lmac);
     if(mbedtls_base64_decode(lmac, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
        0) {
-        ESP_LOGE("LOGIN", "Error decoding MAC address");
+        ESP_LOGE("LOGIN", "[%d] Error decoding MAC address", conn);
         ret = 1;
         goto exitfn;
     }
     if(olen != 6) {
-        ESP_LOGE("CMD", "MAC address size isn't 6 bytes long");
+        ESP_LOGE("CMD", "[%d] MAC address size isn't 6 bytes long", conn);
         ret = 1;
         goto exitfn;
     }
     mac = esp_bt_dev_get_address();
     if(mac == NULL) {
-        ESP_LOGE("CMD", "Unable to read bluetooth MAC address");
+        ESP_LOGE("CMD", "[%d] Unable to read bluetooth MAC address", conn);
         ret = 1;
         goto exitfn;
     }
     if(memcmp(lmac, mac, 6) != 0) {
-        ESP_LOGE("CMD", "MAC address don't match");
+        ESP_LOGE("CMD", "[%d] MAC address don't match", conn);
         ret = 1;
         goto exitfn;
     }
 
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "v");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "Login object hasn't [v] entry");
+        ESP_LOGE("LOGIN", "[%d] Login object hasn't [v] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("LOGIN", "JSON entry [v] isn't number type");
+        ESP_LOGE("LOGIN", "[%d] JSON entry [v] isn't number type", conn);
         ret = 1;
         goto exitfn;
     }
@@ -443,12 +445,12 @@ static int do_login(uint16_t conn, const char* cmd) {
 
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "u");
     if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "Login object hasn't [u] entry");
+        ESP_LOGE("LOGIN", "[%d] Login object hasn't [u] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("LOGIN", "JSON entry [u] isn't number type");
+        ESP_LOGE("LOGIN", "[%d] JSON entry [u] isn't number type", conn);
         ret = 1;
         goto exitfn;
     }
@@ -463,7 +465,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     mbedtls_sha256_finish(&sha256_ctx, session[conn].derived_key);
     mbedtls_sha256_free(&sha256_ctx);
     bin2b64(session[conn].derived_key, sizeof(session[conn].derived_key), chbuf, sizeof(chbuf));
-    ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
+    ESP_LOGI("LOGIN", "[%d] Derived key: %s", conn, chbuf);
 
     json_resp = cJSON_CreateObject();
     // Check key validity 
@@ -483,7 +485,7 @@ exitfn:
     }
     if(json_resp != NULL) {
         if(respond(conn, json_resp, true, true) != 0) {
-            ESP_LOGE("LOGIN", "Fail sending response");
+            ESP_LOGE("LOGIN", "[%d] Fail sending response", conn);
             ret = 1;
         }
         cJSON_Delete(json_resp);
@@ -515,12 +517,12 @@ static int do_cmd_key_upgrade(uint16_t conn, const char* cmd, cJSON* json_resp){
     int cmdl_size;
     cmd_list = cJSON_GetObjectItem(login_obj, "a");
     if(cmd_list == NULL) {
-        ESP_LOGW("CMD_UPGRADE", "There isn't command access list, all commands denied by default");
+        ESP_LOGW("CMD_UPGRADE", "[%d] There isn't command access list, all commands denied by default", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(cmd_list->type & cJSON_Array)) {
-        ESP_LOGE("CMD_UPGRADE", "Access login is not array type");
+        ESP_LOGE("CMD_UPGRADE", "[%d] Access login is not array type", conn);
         ret = 1;
         goto exitfn;
     }
@@ -528,7 +530,7 @@ static int do_cmd_key_upgrade(uint16_t conn, const char* cmd, cJSON* json_resp){
     for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
         cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
         if(cmd_entry == NULL) {
-            ESP_LOGE("CMD_UPGRADE", "Unexpexted end of command array");
+            ESP_LOGE("CMD_UPGRADE", "[%d] Unexpexted end of command array", conn);
             ret = 1;
             goto exitfn;
         }
@@ -635,10 +637,10 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     cJSON* json_resp = NULL;
 
 
-    ESP_LOGI("CMD", "raw cmd: %s", cmd);
+    ESP_LOGI("CMD", "[%d] raw cmd: %s", conn, cmd);
     sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 2) {
-        ESP_LOGE("CMD", "Invalid command data (split data/signature)");
+        ESP_LOGE("CMD", "[%d] Invalid command data (split data/signature)", conn);
         ret = 1;
         goto exitfn;
     }
@@ -661,17 +663,17 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     // Check signature
     olen = sizeof(sig_peer);
     if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
-        ESP_LOGE("CMD", "Invalid b64 signature");
+        ESP_LOGE("CMD", "[%d] Invalid b64 signature", conn);
         ret = 1;
         goto exitfn;
     }
     if(olen < 16) {
-        ESP_LOGE("CMD", "Signature too short (%d)", olen);
+        ESP_LOGE("CMD", "[%d] Signature too short (%d)", conn, olen);
         ret = 1;
         goto exitfn;
     }
     if(memcmp(sig_calc, sig_peer, olen) != 0) {
-        ESP_LOGE("CMD", "Signature don't match");
+        ESP_LOGE("CMD", "[%d] Signature don't match", conn);
         ret = 1;
         goto exitfn;
     }
@@ -679,28 +681,28 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     // Decode json data
     json_cmd = cJSON_Parse(json_data);
     if(json_cmd == NULL) {
-        ESP_LOGE("CMD", "Malformed JSON data");
+        ESP_LOGE("CMD", "[%d] Malformed JSON data", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_cmd->type & cJSON_Object)) {
-        ESP_LOGE("CMD", "JSON is not object type");
+        ESP_LOGE("CMD", "[%d] JSON is not object type", conn);
         ret = 1;
         goto exitfn;
     }
     json_item = cJSON_GetObjectItem(json_cmd, "t");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "Cmd object hasn't [t] entry");
+        ESP_LOGE("CMD", "[%d] Cmd object hasn't [t] entry", conn);
         ret = 1;
         goto exitfn;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "Entry [t] isn't string type");
+        ESP_LOGE("CMD", "[%d] Entry [t] isn't string type", conn);
         ret = 1;
         goto exitfn;
     }
     cmd_str = json_item->valuestring;
-    ESP_LOGI("CMD", "Executing CMD: %s", cmd_str);
+    ESP_LOGI("CMD", "[%d] Executing CMD: %s", conn, cmd_str);
 
     json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "q") == 0) { // Quit
@@ -733,9 +735,9 @@ static int do_cmd(uint16_t conn, const char* cmd) {
             act_tim = DEF_ACT_TIMEOUT;
             clear_all_actuators();
             set_actuator(n, 1);
-            ESP_LOGI("CMD", "shoting actuator %d", n);
+            ESP_LOGI("CMD", "[%d] shoting actuator %d", conn, n);
         } else {
-            ESP_LOGE("CMD", "actuator %d out of range", n);
+            ESP_LOGE("CMD", "[%d] actuator %d out of range", conn, n);
         }
         ret = 0;
         goto exitok;
@@ -762,7 +764,7 @@ exitfn:
     }
     if(json_resp != NULL) {
         if(respond(conn, json_resp, false, true) != 0) {
-            ESP_LOGE("LOGIN", "Fail sending response");
+            ESP_LOGE("LOGIN", "[%d] Fail sending response", conn);
             ret = 1;
         }
         cJSON_Delete(json_resp);
@@ -781,8 +783,9 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
     session[conn].conn_timeout = INI_CONN_TIMEOUT;
     session[conn].connected = true;
     session[conn].nonce = esp_random();
-    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session[conn].address[0], session[conn].address[1],
+    ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
              session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
+    gatts_start_adv();
     xSemaphoreGive(session_sem);
     return ret;
 }
@@ -799,7 +802,7 @@ static int disconnect_cb(uint16_t conn) {
     save_access_data();
     session[conn].connected = false;
     SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
-    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session[conn].address[0], session[conn].address[1],
+    ESP_LOGI(LOG_TAG, "[%d] Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
              session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
 exitfn:
     if(session[conn].smart_reboot) {
@@ -818,7 +821,7 @@ static int cmd_cb(uint16_t conn, const char* cmd, size_t size) {
         ret = 1;
         goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
+    ESP_LOGI(LOG_TAG, "[%d] Command size: %d content: %s", conn, size, cmd);
     if(!session[conn].login) {
         if(config.cfg_setup == 0) {
             ret = do_init_config(conn, cmd);

@@ -72,7 +72,7 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
-#define INI_CONN_TIMEOUT 25
+#define INI_CONN_TIMEOUT 30
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
 static struct session_s {
@@ -86,6 +86,7 @@ static struct session_s {
     int conn_timeout;
     bool login;
     bool connected;
+    bool leaving;
     bool upgrade_on_bye;
     bool upgrade_on_close;
     bool smart_reboot;
@@ -285,7 +286,8 @@ static int do_init_config(const char* cmd) {
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", num_actuators);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
-    session.conn_timeout = 10;
+    session.conn_timeout = 5;
+    session.leaving = true;
     ret = 2;
 
 exitfn:
@@ -702,8 +704,8 @@ static int do_cmd(const char* cmd) {
 
     json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        session.conn_timeout = 2;
-        session.login = false;
+        session.conn_timeout = 5;
+        session.leaving = true;
         if (session.upgrade_on_bye) {
             session.upgrade_on_bye = false;
             set_access_data(session.key_id, session.key_version + 1);
@@ -822,6 +824,9 @@ static int cmd_cb(const char* cmd, size_t size) {
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     if(!session.connected) {
         ret = 1;
+        goto exitfn;
+    }
+    if(session.leaving){
         goto exitfn;
     }
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);

@@ -88,9 +88,7 @@ static gatts_cmd_cb_t gatts_cmd_cb;
 
 // Connection status
 #define CMD_BUFF_SIZE 1024
-#define RES_BUFF_SIZE 1024
 static bufio_t conn_cmd_buff;
-static bufio_t conn_res_buff;
 // ---
 
 #define PROFILE_NUM 1
@@ -98,10 +96,9 @@ static bufio_t conn_res_buff;
 
 struct gatts_profile_inst {
     esp_gatts_cb_t gatts_cb;
-    bool connected;
+    //bool connected;
     uint16_t gatts_if;
     uint16_t app_id;
-    uint16_t conn_id;
     uint16_t service_handle;
     esp_gatt_srvc_id_t service_id;
     uint16_t char_handle;
@@ -183,14 +180,6 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             break;
         }
-        int len = bufio_used(&conn_res_buff);
-        if(len > 22) {
-            len = 22;
-        }
-        rsp.attr_value.len = len;
-        memcpy(&rsp.attr_value.value[0], bufio_tail(&conn_res_buff), len);
-        esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
-        bufio_discard(&conn_res_buff, len);
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
@@ -233,7 +222,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             *end_cmd = '\0';
             size_t cmd_size = strlen((char*)bufio_tail(&conn_cmd_buff));
             if(gatts_cmd_cb != NULL) {
-                res = gatts_cmd_cb(bufio_tail(&conn_cmd_buff), cmd_size);
+                res = gatts_cmd_cb(param->write.conn_id, bufio_tail(&conn_cmd_buff), cmd_size);
             }
             bufio_discard(&conn_cmd_buff, cmd_size + 1);
         }
@@ -303,23 +292,20 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_STOP_EVT:
         break;
     case ESP_GATTS_CONNECT_EVT: {
+        ESP_LOGI(LOG_TAG, "CONNECT_EVT, ConnID %d", param->connect.conn_id);
         if(gatts_connect_cb != NULL) {
-            if(gatts_connect_cb(param->connect.remote_bda)) {
+            if(gatts_connect_cb(param->connect.conn_id, gatts_if, param->connect.remote_bda)) {
                 esp_ble_gatts_close(gatts_if, param->connect.conn_id);
                 break;
             }
         }
-        gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
-        gl_profile_tab[PROFILE_A_APP_ID].connected = true;
         break;
     }
     case ESP_GATTS_DISCONNECT_EVT:
-        gl_profile_tab[PROFILE_A_APP_ID].connected = false;
         if(gatts_disconnect_cb != NULL) {
-            gatts_disconnect_cb(param->connect.remote_bda);
+            gatts_disconnect_cb(param->disconnect.conn_id);
         }
         bufio_discard_all(&conn_cmd_buff);
-        bufio_discard_all(&conn_res_buff);
         esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GATTS_OPEN_EVT:
@@ -370,7 +356,6 @@ int init_gatts(gatts_connect_cb_t conn_cb,
     gatts_cmd_cb = cmd_cb;
     memcpy(adv_key_counter, &key_counter, sizeof(key_counter)); // Warning. Endianess dependent !!!
     bufio_init(&conn_cmd_buff, CMD_BUFF_SIZE);
-    bufio_init(&conn_res_buff, RES_BUFF_SIZE);
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
@@ -401,11 +386,8 @@ int init_gatts(gatts_connect_cb_t conn_cb,
     return ESP_OK;
 }
 
-esp_err_t gatts_close_connection() {
-    if(gl_profile_tab[PROFILE_A_APP_ID].connected) {
-        return esp_ble_gatts_close(gl_profile_tab[PROFILE_A_APP_ID].gatts_if, gl_profile_tab[PROFILE_A_APP_ID].conn_id);
-    }
-    return ESP_ERR_INVALID_STATE;
+esp_err_t gatts_close_connection(uint16_t conn_id, uint16_t gatts_if) {
+        return esp_ble_gatts_close(gatts_if, conn_id);
 }
 
 esp_err_t gatts_start_adv() {
@@ -416,36 +398,28 @@ esp_err_t gatts_stop_adv() {
     return esp_ble_gap_stop_advertising();
 }
 
-ssize_t gatts_send_response(const char* resp) {
-    if(!gl_profile_tab[PROFILE_A_APP_ID].connected) {
-        return 0;
-    }
-    ssize_t sz = strlen(resp);
-    if(bufio_avail(&conn_res_buff) < sz + 1) {
-        return 0;
-    }
-    bufio_push_bytes(&conn_res_buff, resp, sz);
-    bufio_push_byte(&conn_res_buff, 10); // Append \n
+ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const char* resp) {
+    esp_err_t res = ESP_OK;
+    size_t len = strlen(resp);
+    size_t sent = 0;
+    uint8_t* ptr = (uint8_t *)resp;
 
-    if(gl_profile_tab[PROFILE_A_APP_ID].notif) {
-        esp_err_t res;
-        int len = bufio_used(&conn_res_buff);
-        while(len) {
-            int chunk_len = len;
-            if(chunk_len > 20) {
-                chunk_len = 20;
-            }
-            res = esp_ble_gatts_send_indicate(
-                gl_profile_tab[PROFILE_A_APP_ID].gatts_if, gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                gl_profile_tab[PROFILE_A_APP_ID].char_handle, chunk_len, bufio_tail(&conn_res_buff), false);
-            if(res != ESP_OK) {
-                ESP_LOGE(LOG_TAG, "Error sending notification");
-            } else {
-                ESP_LOGI(LOG_TAG, "Notification sent");
-            }
-            bufio_discard(&conn_res_buff, chunk_len);
-            len -= chunk_len;
+    while(len) {
+        int chunk_len = len;
+        if(chunk_len > 20) {
+            chunk_len = 20;
         }
+        res = esp_ble_gatts_send_indicate(
+            gatts_if, conn_id,
+            gl_profile_tab[PROFILE_A_APP_ID].char_handle, chunk_len, ptr, false);
+        if(res != ESP_OK) {
+            ESP_LOGE(LOG_TAG, "Error sending notification");
+        } else {
+            ESP_LOGI(LOG_TAG, "Notification sent");
+        }
+        len -= chunk_len;
+        ptr += chunk_len;
+        sent += chunk_len;
     }
-    return sz;
+    return sent;
 }

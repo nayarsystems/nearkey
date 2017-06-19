@@ -75,7 +75,9 @@ static nvs_handle nvs_config_h;
 #define INI_CONN_TIMEOUT 30
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
-static struct session_s {
+
+typedef struct session_s {
+    uint16_t gatts_if;
     uint32_t key_version;
     uint32_t key_id;
     uint8_t derived_key[32];
@@ -84,13 +86,12 @@ static struct session_s {
     uint64_t rnonce;
     uint8_t address[6];
     int conn_timeout;
-    bool login;
     bool connected;
-    bool leaving;
+    bool login;
     bool upgrade_on_bye;
-    bool upgrade_on_close;
     bool smart_reboot;
-} session;
+} session_t ;
+static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // --- End Session stuff
 
 // Actuator timers
@@ -124,7 +125,7 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(cJSON* resp, bool add_nounce, bool add_signature) {
+static int respond(uint16_t conn, cJSON* resp, bool add_nounce, bool add_signature) {
     int res = 0;
     char* json_str = NULL;
     char* sign_str = NULL;
@@ -136,7 +137,7 @@ static int respond(cJSON* resp, bool add_nounce, bool add_signature) {
 
     // Append n and x nonce fields
     if(add_nounce) {
-        snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
+        snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].nonce);
         cJSON_AddStringToObject(resp, "n", nonce_str);
     }
     json_str = cJSON_PrintUnformatted(resp);
@@ -147,13 +148,13 @@ static int respond(cJSON* resp, bool add_nounce, bool add_signature) {
     }
     if(add_signature) {
         // Compute signature
-        snprintf(nonce_str, sizeof(nonce_str), "%llu", session.rnonce);
-        session.rnonce++; // Increment rnonce for next response
+        snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].rnonce);
+        session[conn].rnonce++; // Increment rnonce for next response
         mbedtls_sha256_init(&sha256_ctx);
         mbedtls_sha256_starts(&sha256_ctx, 0);
         mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_str, strlen(json_str));
         mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
-        mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
+        mbedtls_sha256_update(&sha256_ctx, session[conn].derived_key, sizeof(session[conn].derived_key));
         mbedtls_sha256_finish(&sha256_ctx, sign_bin);
         mbedtls_sha256_free(&sha256_ctx);
         mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
@@ -163,11 +164,11 @@ static int respond(cJSON* resp, bool add_nounce, bool add_signature) {
             goto exitfn;
         }
         mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
-        asprintf(&res_str, "%s~%s", json_str, sign_str);
+        asprintf(&res_str, "%s~%s\n", json_str, sign_str);
     } else {
-        asprintf(&res_str, "%s", json_str);
+        asprintf(&res_str, "%s\n", json_str);
     }
-    gatts_send_response(res_str);
+    gatts_send_response(conn, session[conn].gatts_if, res_str);
     ESP_LOGI("RESPOND", "Raw response: %s", res_str);
 
 exitfn:
@@ -183,14 +184,14 @@ exitfn:
     return res;
 }
 
-static int chk_cmd_access(const char* cmd) {
+static int chk_cmd_access(uint16_t conn, const char* cmd) {
     int ret = 0;
     int cmdl_size = 0;
 
     cJSON* cmd_list = NULL;
     cJSON* cmd_entry = NULL;
 
-    cmd_list = cJSON_GetObjectItem(session.login_obj, "a");
+    cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "a");
     if(cmd_list == NULL) {
         ESP_LOGW("CMD", "There isn't command access list, all commands denied by default");
         ret = 1;
@@ -222,7 +223,7 @@ exitfn:
     return ret;
 }
 
-static int do_init_config(const char* cmd) {
+static int do_init_config(uint16_t conn, const char* cmd) {
     int ret = 0;
     size_t olen;
     cJSON* json_obj = NULL;
@@ -280,14 +281,13 @@ static int do_init_config(const char* cmd) {
     }
     config.cfg_setup = 1;
     save_flash_config();
-    session.smart_reboot = true;
+    session[conn].smart_reboot = true;
 
     json_resp = cJSON_CreateObject();
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", num_actuators);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
-    session.conn_timeout = 5;
-    session.leaving = true;
+    session[conn].conn_timeout = 5;
     ret = 2;
 
 exitfn:
@@ -295,7 +295,7 @@ exitfn:
         cJSON_Delete(json_obj);
     }
     if(json_resp != NULL) {
-        if(respond(json_resp, false, false) != 0) {
+        if(respond(conn, json_resp, false, false) != 0) {
             ESP_LOGE("CONFIG", "Fail sending response");
             ret = 1;
         }
@@ -305,7 +305,7 @@ exitfn:
     return ret;
 }
 
-static int do_login(const char* cmd) {
+static int do_login(uint16_t conn, const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
     mbedtls_sha256_context sha256_ctx = {};
@@ -362,21 +362,21 @@ static int do_login(const char* cmd) {
     }
 
     // Set Session rnonce
-    session.rnonce = strtoull(nonce_data, NULL, 10);
+    session[conn].rnonce = strtoull(nonce_data, NULL, 10);
 
     // Decode json_data
-    SETPTR_cJSON(session.login_obj, cJSON_Parse(json_data));
-    if(session.login_obj == NULL) {
+    SETPTR_cJSON(session[conn].login_obj, cJSON_Parse(json_data));
+    if(session[conn].login_obj == NULL) {
         ESP_LOGE("LOGIN", "Invalid json data");
         ret = 1;
         goto exitfn;
     }
-    if(!(session.login_obj->type & cJSON_Object)) {
+    if(!(session[conn].login_obj->type & cJSON_Object)) {
         ESP_LOGE("LOGIN", "JSON login is not object type");
         ret = 1;
         goto exitfn;
     }
-    json_item = cJSON_GetObjectItem(session.login_obj, "t");
+    json_item = cJSON_GetObjectItem(session[conn].login_obj, "t");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "Login object hasn't [t] entry");
         ret = 1;
@@ -392,7 +392,7 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    json_item = cJSON_GetObjectItem(session.login_obj, "l");
+    json_item = cJSON_GetObjectItem(session[conn].login_obj, "l");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "Login object hasn't [l] entry");
         ret = 1;
@@ -428,7 +428,7 @@ static int do_login(const char* cmd) {
         goto exitfn;
     }
 
-    json_item = cJSON_GetObjectItem(session.login_obj, "v");
+    json_item = cJSON_GetObjectItem(session[conn].login_obj, "v");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "Login object hasn't [v] entry");
         ret = 1;
@@ -439,9 +439,9 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    session.key_version = json_item->valueint;
+    session[conn].key_version = json_item->valueint;
 
-    json_item = cJSON_GetObjectItem(session.login_obj, "u");
+    json_item = cJSON_GetObjectItem(session[conn].login_obj, "u");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "Login object hasn't [u] entry");
         ret = 1;
@@ -452,7 +452,7 @@ static int do_login(const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    session.key_id = json_item->valueint;
+    session[conn].key_id = json_item->valueint;
 
     // Calculate derived key
     mbedtls_sha256_init(&sha256_ctx);
@@ -460,14 +460,14 @@ static int do_login(const char* cmd) {
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(json_data));
     mbedtls_sha256_update(&sha256_ctx, sig_calc, sizeof(sig_calc));
     mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
-    mbedtls_sha256_finish(&sha256_ctx, session.derived_key);
+    mbedtls_sha256_finish(&sha256_ctx, session[conn].derived_key);
     mbedtls_sha256_free(&sha256_ctx);
-    bin2b64(session.derived_key, sizeof(session.derived_key), chbuf, sizeof(chbuf));
+    bin2b64(session[conn].derived_key, sizeof(session[conn].derived_key), chbuf, sizeof(chbuf));
     ESP_LOGI("LOGIN", "Derived key: %s", chbuf);
 
     json_resp = cJSON_CreateObject();
     // Check key validity 
-    if (set_access_data(session.key_id, session.key_version) < 0){
+    if (set_access_data(session[conn].key_id, session[conn].key_version) < 0){
         cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
         cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
         ret = 2;
@@ -475,14 +475,14 @@ static int do_login(const char* cmd) {
     }
 
     cJSON_AddStringToObject(json_resp, "r", "ok");
-    session.login = true;
+    session[conn].login = true;
 
 exitfn:
     if(sl != NULL) {
         str_list_free(sl);
     }
     if(json_resp != NULL) {
-        if(respond(json_resp, true, true) != 0) {
+        if(respond(conn, json_resp, true, true) != 0) {
             ESP_LOGE("LOGIN", "Fail sending response");
             ret = 1;
         }
@@ -492,7 +492,7 @@ exitfn:
     return ret;
 }
 
-static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
+static int do_cmd_key_upgrade(uint16_t conn, const char* cmd, cJSON* json_resp){
     int ret = 0;
     cJSON* login_obj = NULL;
     cJSON* json_item = NULL;
@@ -504,7 +504,7 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
     uint8_t sig_calc[32] = {0};
     size_t olen = 0;
 
-    login_obj = cJSON_Duplicate(session.login_obj, 1);
+    login_obj = cJSON_Duplicate(session[conn].login_obj, 1);
     json_item = cJSON_GetObjectItem(login_obj, "v");
     json_item->valueint++;
     json_item->valuedouble++;
@@ -570,7 +570,7 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
 
     // Encrypt derived key with session derived key
     for(int i = 0; i < sizeof(sig_calc); i++){
-        sig_calc[i] = sig_calc[i] ^ session.derived_key[i];
+        sig_calc[i] = sig_calc[i] ^ session[conn].derived_key[i];
     }
 
     mbedtls_base64_encode(NULL, 0, &olen, sig_calc, sizeof(sig_calc));
@@ -597,7 +597,7 @@ static int do_cmd_key_upgrade(const char* cmd, cJSON* json_resp){
     cJSON_AddStringToObject(robject, "dkey", login_dkey_str);
     cJSON_AddItemToObject(json_resp, "r", robject);
 
-    session.upgrade_on_bye = true;
+    session[conn].upgrade_on_bye = true;
 
 
 exitfn:
@@ -619,7 +619,7 @@ exitfn:
     return ret;
 }
 
-static int do_cmd(const char* cmd) {
+static int do_cmd(uint16_t conn, const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
     size_t olen = 0;
@@ -648,13 +648,13 @@ static int do_cmd(const char* cmd) {
     sign_data = pl->s;
 
     // Calculate signature
-    snprintf(nonce_str, sizeof(nonce_str), "%llu", session.nonce);
-    session.nonce++; // Increment nonce for next command
+    snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].nonce);
+    session[conn].nonce++; // Increment nonce for next command
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_data, strlen(json_data));
     mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
-    mbedtls_sha256_update(&sha256_ctx, session.derived_key, sizeof(session.derived_key));
+    mbedtls_sha256_update(&sha256_ctx, session[conn].derived_key, sizeof(session[conn].derived_key));
     mbedtls_sha256_finish(&sha256_ctx, sig_calc);
     mbedtls_sha256_free(&sha256_ctx);
 
@@ -704,12 +704,13 @@ static int do_cmd(const char* cmd) {
 
     json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        session.conn_timeout = 5;
-        session.leaving = true;
-        if (session.upgrade_on_bye) {
-            session.upgrade_on_bye = false;
-            set_access_data(session.key_id, session.key_version + 1);
+        session[conn].conn_timeout = 5;
+        if (session[conn].upgrade_on_bye) {
+            session[conn].upgrade_on_bye = false;
+            set_access_data(session[conn].key_id, session[conn].key_version + 1);
         }
+        session[conn].login = false;
+        save_access_data();
         ret = 2;
         goto exitok;
     }
@@ -719,7 +720,7 @@ static int do_cmd(const char* cmd) {
         goto exitok;
     }
 
-    if(chk_cmd_access(cmd_str) != 0) {
+    if(chk_cmd_access(conn, cmd_str) != 0) {
         cJSON_AddNumberToObject(json_resp, "e", ERR_PERMISSION_DENIED);
         cJSON_AddStringToObject(json_resp, "d", ERR_PERMISSION_DENIED_S);
         ret = 2;
@@ -741,7 +742,7 @@ static int do_cmd(const char* cmd) {
     }
 
     if (strcmp(cmd_str, "u") == 0 || strcmp(cmd_str, "U") == 0){
-        ret = do_cmd_key_upgrade(cmd, json_resp);
+        ret = do_cmd_key_upgrade(conn, cmd, json_resp);
         goto exitfn;
     }
 
@@ -760,7 +761,7 @@ exitfn:
         cJSON_Delete(json_cmd);
     }
     if(json_resp != NULL) {
-        if(respond(json_resp, false, true) != 0) {
+        if(respond(conn, json_resp, false, true) != 0) {
             ESP_LOGE("LOGIN", "Fail sending response");
             ret = 1;
         }
@@ -769,48 +770,39 @@ exitfn:
     return ret;
 }
 
-static int connect_cb(const esp_bd_addr_t addr) {
+static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr) {
     int ret = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    if(session.connected) {
-        ESP_LOGE(LOG_TAG, "DEVICE BUSY Connection attempt from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0],
-                 session.address[1], session.address[2], session.address[3], session.address[4], session.address[5]);
-        ret = 1;
-        goto exitfn;
-    }
-    memset(&session, 0, sizeof(session));
-    memcpy(&session.address, addr, sizeof(session.address));
-    session.conn_timeout = INI_CONN_TIMEOUT;
-    session.connected = true;
-    session.nonce = esp_random();
-    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
-             session.address[2], session.address[3], session.address[4], session.address[5]);
-exitfn:
+    memset(&session[conn], 0, sizeof(session_t));
+    memcpy(&session[conn].address, addr, sizeof(((session_t *)0)->address));
+    session[conn].gatts_if = gatts_if;
+    session[conn].conn_timeout = INI_CONN_TIMEOUT;
+    session[conn].connected = true;
+    session[conn].nonce = esp_random();
+    ESP_LOGI(LOG_TAG, "Connection from: %02x:%02x:%02x:%02x:%02x:%02x", session[conn].address[0], session[conn].address[1],
+             session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
     xSemaphoreGive(session_sem);
     return ret;
 }
 
-static int disconnect_cb(const esp_bd_addr_t addr) {
+static int disconnect_cb(uint16_t conn) {
     int ret = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    if(!session.connected) {
+    if(!session[conn].connected) {
         ret = 1;
         goto exitfn;
     }
-    if (session.upgrade_on_close) {
-        set_access_data(session.key_id, session.key_version + 1);
-    }
     save_access_data();
-    session.connected = false;
-    SETPTR_cJSON(session.login_obj, NULL); // Free login JSON data
-    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session.address[0], session.address[1],
-             session.address[2], session.address[3], session.address[4], session.address[5]);
+    session[conn].connected = false;
+    SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
+    ESP_LOGI(LOG_TAG, "Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", session[conn].address[0], session[conn].address[1],
+             session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
 exitfn:
-    if(session.smart_reboot) {
+    if(session[conn].smart_reboot) {
         reset_tm = 1;
     }
     ESP_LOGI(LOG_TAG,"Free heap size: %d", esp_get_free_heap_size());
@@ -818,29 +810,26 @@ exitfn:
     return ret;
 }
 
-static int cmd_cb(const char* cmd, size_t size) {
+static int cmd_cb(uint16_t conn, const char* cmd, size_t size) {
     int ret = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
-    if(!session.connected) {
+    if(!session[conn].connected) {
         ret = 1;
         goto exitfn;
     }
-    if(session.leaving){
-        goto exitfn;
-    }
     ESP_LOGI(LOG_TAG, "Command size: %d content: %s", size, cmd);
-    if(!session.login) {
+    if(!session[conn].login) {
         if(config.cfg_setup == 0) {
-            ret = do_init_config(cmd);
+            ret = do_init_config(conn, cmd);
         } else {
-            ret = do_login(cmd);
+            ret = do_login(conn, cmd);
         }
     } else {
-        ret = do_cmd(cmd);
+        ret = do_cmd(conn, cmd);
     }
     if(ret == 0) {
-        session.conn_timeout = DEF_CONN_TIMEOUT;
+        session[conn].conn_timeout = DEF_CONN_TIMEOUT;
     } else if(ret == 2) {
         ret = 0;
     }
@@ -1099,17 +1088,6 @@ void app_main(void) {
                 esp_restart();
             }
         }
-
-        if(session.connected) {
-            if(session.conn_timeout > 0) {
-                session.conn_timeout--;
-            } else {
-                ESP_LOGE(LOG_TAG, "Watch dog disconnection");
-                session.conn_timeout = DEF_CONN_TIMEOUT;
-                gatts_close_connection();
-            }
-        }
-
         xSemaphoreGive(session_sem);
     }
 }

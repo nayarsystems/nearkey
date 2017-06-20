@@ -53,6 +53,7 @@ static void set_actuator(int act, int st);
 static void clear_all_actuators();
 static esp_err_t save_access_data();
 static int set_access_data(uint32_t idx, uint32_t ts);
+static void clear_session(uint16_t conn);
 // --- End Function definitions
 
 // Config stuff
@@ -73,7 +74,6 @@ static nvs_handle nvs_config_h;
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
 #define RX_BUFFER_SIZE 512
-#define INI_CONN_TIMEOUT 30
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
 
@@ -91,7 +91,6 @@ typedef struct session_s {
     bool connected;
     bool login;
     bool upgrade_on_bye;
-    bool smart_reboot;
 } session_t ;
 static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // --- End Session stuff
@@ -283,14 +282,14 @@ static int do_init_config(uint16_t conn, const char* cmd) {
     }
     config.cfg_setup = 1;
     save_flash_config();
-    session[conn].smart_reboot = true;
+    reset_tm = 2;
 
     json_resp = cJSON_CreateObject();
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", num_actuators);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
     session[conn].conn_timeout = 5;
-    ret = 2;
+    ret = 1;
 
 exitfn:
     if(json_obj != NULL) {
@@ -472,7 +471,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     if (set_access_data(session[conn].key_id, session[conn].key_version) < 0){
         cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
         cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
-        ret = 2;
+        ret = 1;
         goto exitfn;
     }
 
@@ -706,14 +705,12 @@ static int do_cmd(uint16_t conn, const char* cmd) {
 
     json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        session[conn].conn_timeout = 5;
         if (session[conn].upgrade_on_bye) {
             session[conn].upgrade_on_bye = false;
             set_access_data(session[conn].key_id, session[conn].key_version + 1);
         }
-        session[conn].login = false;
-        save_access_data();
-        ret = 2;
+        ret = 1;
+        //gatts_close_connection(conn, session[conn].gatts_if); // TEST ONLY
         goto exitok;
     }
 
@@ -725,7 +722,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     if(chk_cmd_access(conn, cmd_str) != 0) {
         cJSON_AddNumberToObject(json_resp, "e", ERR_PERMISSION_DENIED);
         cJSON_AddStringToObject(json_resp, "d", ERR_PERMISSION_DENIED_S);
-        ret = 2;
+        ret = 0;
         goto exitfn;
     }
 
@@ -750,7 +747,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
-    ret = 2;
+    ret = 0;
     goto exitfn;
 
 exitok:
@@ -772,15 +769,21 @@ exitfn:
     return ret;
 }
 
+static void clear_session(uint16_t conn){
+    SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
+    memset(&session[conn], 0, sizeof(session_t));
+    save_access_data();
+}
+
 static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr) {
     int ret = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    memset(&session[conn], 0, sizeof(session_t));
+    clear_session(conn);
     memcpy(&session[conn].address, addr, sizeof(((session_t *)0)->address));
     session[conn].gatts_if = gatts_if;
-    session[conn].conn_timeout = INI_CONN_TIMEOUT;
+    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
     session[conn].connected = true;
     session[conn].nonce = esp_random();
     ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
@@ -795,30 +798,21 @@ static int disconnect_cb(uint16_t conn) {
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    if(!session[conn].connected) {
-        ret = 1;
-        goto exitfn;
-    }
-    save_access_data();
-    session[conn].connected = false;
-    SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
     ESP_LOGI(LOG_TAG, "[%d] Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
              session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
-exitfn:
-    if(session[conn].smart_reboot) {
-        reset_tm = 1;
-    }
+    clear_session(conn);
     ESP_LOGI(LOG_TAG,"Free heap size: %d", esp_get_free_heap_size());
     xSemaphoreGive(session_sem);
     return ret;
 }
 
 static int cmd_cb(uint16_t conn, const char* cmd, size_t size) {
+    int retval = 0;
     int ret = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     if(!session[conn].connected) {
-        ret = 1;
+        retval = 1;
         goto exitfn;
     }
     ESP_LOGI(LOG_TAG, "[%d] Command size: %d content: %s", conn, size, cmd);
@@ -831,14 +825,13 @@ static int cmd_cb(uint16_t conn, const char* cmd, size_t size) {
     } else {
         ret = do_cmd(conn, cmd);
     }
-    if(ret == 0) {
-        session[conn].conn_timeout = DEF_CONN_TIMEOUT;
-    } else if(ret == 2) {
-        ret = 0;
+    if(ret != 0) {
+        session[conn].login = false; // Logout on unrecoverable error
     }
+    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
 exitfn:
     xSemaphoreGive(session_sem);
-    return ret;
+    return retval;
 }
 
 static esp_err_t init_flash() {

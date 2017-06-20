@@ -50,7 +50,6 @@ static int const actuators[] = ACTUATORS_GPIO;
 // Function declarations
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
-static void clear_all_actuators();
 static esp_err_t save_access_data();
 static int set_access_data(uint32_t idx, uint32_t ts);
 static void clear_session(uint16_t conn);
@@ -97,7 +96,7 @@ static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 
 // Actuator timers
 #define DEF_ACT_TIMEOUT 10
-static uint32_t act_tim;
+static uint32_t act_timers[num_actuators];
 // --- End Actuator timers
 
 // Reset timer
@@ -729,9 +728,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     if(strlen(cmd_str) >= 2 && cmd_str[0] == 'a' && cmd_str[1] >= '0' && cmd_str[1] <= '9') { // Actuator
         int n = atoi(&cmd_str[1]);
         if(n >= 0 && n < num_actuators) {
-            act_tim = DEF_ACT_TIMEOUT;
-            clear_all_actuators();
-            set_actuator(n, 1);
+            act_timers[n] = DEF_ACT_TIMEOUT;
             ESP_LOGI("CMD", "[%d] shoting actuator %d", conn, n);
         } else {
             ESP_LOGE("CMD", "[%d] actuator %d out of range", conn, n);
@@ -1032,12 +1029,6 @@ static void set_actuator(int act, int st) {
     }
 }
 
-static void clear_all_actuators() {
-    for(int n = 0; n < num_actuators; n++) {
-        set_actuator(n, 0);
-    }
-}
-
 static int get_reset_button() {
     return gpio_get_level(RESET_BUTTON_GPIO);
 }
@@ -1061,16 +1052,17 @@ void app_main(void) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY))
             ;
-        if(act_tim > 0) {
-            act_tim--;
-        } else {
-            clear_all_actuators();
+
+        for (int act = 0; act < num_actuators; act ++){
+            set_actuator(act, act_timers[act] != 0);
+            if(act_timers[act] > 0){
+                act_timers[act]--;
+            }
         }
 
         if(get_reset_button() == 0) {
             ESP_LOGI(LOG_TAG, "Reset button!!!!");
-            act_tim = DEF_ACT_TIMEOUT;
-            set_actuator(0, 1);
+            act_timers[0] = DEF_ACT_TIMEOUT;
             reset_tm = DEF_ACT_TIMEOUT + 1;
             erase_on_reset = true;
         }

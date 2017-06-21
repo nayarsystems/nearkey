@@ -83,13 +83,9 @@ static esp_ble_adv_params_t test_adv_params = {
 // App callbacks
 static gatts_connect_cb_t gatts_connect_cb;
 static gatts_disconnect_cb_t gatts_disconnect_cb;
-static gatts_cmd_cb_t gatts_cmd_cb;
+static gatts_rx_cb_t gatts_rx_cb;
 // ---
 
-// Connection status
-#define CMD_BUFF_SIZE 1024
-static bufio_t conn_cmd_buff;
-// ---
 
 #define PROFILE_NUM 1
 #define PROFILE_A_APP_ID 0
@@ -208,24 +204,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         rsp.attr_value.len = param->write.len;
         rsp.attr_value.offset = param->write.len;
 
-        if(bufio_avail(&conn_cmd_buff) < param->write.len) {
-            if(param->write.need_rsp) {
-                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id,
-                                            ESP_GATT_PREPARE_Q_FULL, &rsp);
-            }
-            bufio_discard_all(&conn_cmd_buff);
-            break;
-        }
-        bufio_push_bytes(&conn_cmd_buff, param->write.value, param->write.len);
-        char* end_cmd = strchr(bufio_tail(&conn_cmd_buff), 10); // Search for "\n"
-        if(end_cmd != NULL) {
-            *end_cmd = '\0';
-            size_t cmd_size = strlen((char*)bufio_tail(&conn_cmd_buff));
-            if(gatts_cmd_cb != NULL) {
-                res = gatts_cmd_cb(param->write.conn_id, bufio_tail(&conn_cmd_buff), cmd_size);
-            }
-            bufio_discard(&conn_cmd_buff, cmd_size + 1);
-        }
+        res = gatts_rx_cb(param->write.conn_id, param->write.value, param->write.len);
         if(param->write.need_rsp) {
             if(param->write.is_prep) {
                 esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
@@ -305,7 +284,6 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         if(gatts_disconnect_cb != NULL) {
             gatts_disconnect_cb(param->disconnect.conn_id);
         }
-        bufio_discard_all(&conn_cmd_buff);
         esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GATTS_OPEN_EVT:
@@ -347,15 +325,14 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
 int init_gatts(gatts_connect_cb_t conn_cb,
                gatts_disconnect_cb_t disconn_cb,
-               gatts_cmd_cb_t cmd_cb,
+               gatts_rx_cb_t cmd_cb,
                uint32_t key_counter) {
     esp_err_t ret;
 
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
-    gatts_cmd_cb = cmd_cb;
+    gatts_rx_cb = cmd_cb;
     memcpy(adv_key_counter, &key_counter, sizeof(key_counter)); // Warning. Endianess dependent !!!
-    bufio_init(&conn_cmd_buff, CMD_BUFF_SIZE);
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);

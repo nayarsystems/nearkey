@@ -57,7 +57,7 @@ static void clear_session(uint16_t conn);
 
 // Config stuff
 #define CFG_VERSION 3
-#define MAX_ACCESS_ENTRIES 1000
+#define MAX_ACCESS_ENTRIES 1024
 
 static struct config_s {
     uint32_t cfg_version;
@@ -66,13 +66,14 @@ static struct config_s {
 } __attribute__((packed)) config;
 
 static bool access_chg;
+static uint32_t access_blk;
 static uint32_t access[MAX_ACCESS_ENTRIES];
 static nvs_handle nvs_config_h;
 // --- End Config stuff
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
-#define RX_BUFFER_SIZE 512
+#define RX_BUFFER_SIZE 1024
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
 
@@ -81,7 +82,8 @@ typedef struct session_s {
     uint32_t key_version;
     uint32_t key_id;
     uint8_t derived_key[32];
-    char *rx_buffer[RX_BUFFER_SIZE];
+    uint32_t rx_buffer_pos;
+    char rx_buffer[RX_BUFFER_SIZE];
     cJSON* login_obj;
     uint64_t nonce;
     uint64_t rnonce;
@@ -635,7 +637,6 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     cJSON* json_resp = NULL;
 
 
-    ESP_LOGI("CMD", "[%d] raw cmd: %s", conn, cmd);
     sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 2) {
         ESP_LOGE("CMD", "[%d] Invalid command data (split data/signature)", conn);
@@ -700,7 +701,6 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
     cmd_str = json_item->valuestring;
-    ESP_LOGI("CMD", "[%d] Executing CMD: %s", conn, cmd_str);
 
     json_resp = cJSON_CreateObject();
     if(strcmp(cmd_str, "q") == 0) { // Quit
@@ -709,7 +709,6 @@ static int do_cmd(uint16_t conn, const char* cmd) {
             set_access_data(session[conn].key_id, session[conn].key_version + 1);
         }
         ret = 1;
-        //gatts_close_connection(conn, session[conn].gatts_if); // TEST ONLY
         goto exitok;
     }
 
@@ -803,30 +802,53 @@ static int disconnect_cb(uint16_t conn) {
     return ret;
 }
 
-static int cmd_cb(uint16_t conn, const char* cmd, size_t size) {
+static int cmd_cb(uint16_t conn) {
     int retval = 0;
     int ret = 0;
+
+    ESP_LOGI(LOG_TAG, "[%d] Command: %s", conn, session[conn].rx_buffer);
+    if(!session[conn].login) {
+        if(config.cfg_setup == 0) {
+            ret = do_init_config(conn, session[conn].rx_buffer);
+        } else {
+            ret = do_login(conn, session[conn].rx_buffer);
+        }
+    } else {
+        ret = do_cmd(conn, session[conn].rx_buffer);
+    }
+    if(ret != 0) {
+        session[conn].login = false; // Logout on unrecoverable error
+    }
+    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
+    return retval;
+}
+
+static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
+    int retval = 0;
 
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     if(!session[conn].connected) {
         retval = 1;
         goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "[%d] Command size: %d content: %s", conn, size, cmd);
-    if(!session[conn].login) {
-        if(config.cfg_setup == 0) {
-            ret = do_init_config(conn, cmd);
-        } else {
-            ret = do_login(conn, cmd);
-        }
-    } else {
-        ret = do_cmd(conn, cmd);
+    if (session[conn].rx_buffer_pos + data_len > (RX_BUFFER_SIZE - 2)){
+        retval = 1;
+        ESP_LOGE(LOG_TAG, "[%d] RX buffer overflow", conn);
+        goto exitfn;
     }
-    if(ret != 0) {
-        session[conn].login = false; // Logout on unrecoverable error
+    memcpy(&session[conn].rx_buffer[session[conn].rx_buffer_pos], data, data_len);
+    session[conn].rx_buffer_pos += data_len;
+    session[conn].rx_buffer[session[conn].rx_buffer_pos] = 0;
+
+    char* end_cmd = strchr(session[conn].rx_buffer, 10); // Search for "\n"
+    if(end_cmd != NULL) {
+        *end_cmd = '\0';
+        cmd_cb(conn);
+        session[conn].rx_buffer_pos = 0;
+        session[conn].rx_buffer[0] = 0;
     }
-    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
-exitfn:
+
+exitfn:    
     xSemaphoreGive(session_sem);
     return retval;
 }
@@ -852,42 +874,70 @@ fail:
 
 static esp_err_t load_access_data(){
     esp_err_t err = ESP_OK;
-    size_t size;
 
     access_chg = false;
-    err = nvs_get_blob(nvs_config_h, "access", NULL, &size); // Get blob size
+    err = nvs_get_u32(nvs_config_h, "access_blk", &access_blk);
     if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) reading access data (getting blob size)", err);
+        ESP_LOGE(LOG_TAG, "Error (%d) reading nvs access_blk", err);
         goto fail;
     }
-    err = nvs_get_blob(nvs_config_h, "access", access, &size);
-    if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) reading access data", err);
+    const esp_partition_t* part = esp_partition_find_first(0x40, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    if (part == NULL){
+        ESP_LOGE(LOG_TAG, "Error, access partition not found");
+        err = ESP_ERR_NVS_NOT_FOUND;
         goto fail;
     }
-    if(size != sizeof(access)){
-        ESP_LOGE(LOG_TAG, "access data size dont match (%d != %d", size, sizeof(access));
+    err = esp_partition_read(part, sizeof(access) * access_blk, access, sizeof(access));
+    if (err != ESP_OK){
+        ESP_LOGE(LOG_TAG, "Error (%d) writing access data partition", err);
+        goto fail;
     }
+    ESP_LOGI(LOG_TAG, "acces data loaded from block: %d", access_blk);
+
 fail:
     return err;
 }
 
-static esp_err_t save_access_data(){
+static esp_err_t save_access_data() {
     esp_err_t err = ESP_OK;
 
     if (access_chg){
-        err = nvs_set_blob(nvs_config_h, "access", access, sizeof(access));
+        const esp_partition_t* part = esp_partition_find_first(0x40, ESP_PARTITION_SUBTYPE_ANY, NULL);
+        if (part == NULL){
+            ESP_LOGE(LOG_TAG, "Error, access partition not found");
+            err = ESP_ERR_NVS_NOT_FOUND;
+            goto fail;
+        }
+        access_blk += 1;
+        if (access_blk * sizeof(access) >= part->size) {
+            access_blk = 0;
+        }
+        err = esp_partition_erase_range(part, sizeof(access) * access_blk, sizeof(access));
         if (err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) writing access data", err);
+            ESP_LOGE(LOG_TAG, "Error (%d) erasing access data partition", err);
+            goto fail;
+        }
+        err = esp_partition_write(part, sizeof(access) * access_blk, access, sizeof(access));
+        if (err != ESP_OK){
+            ESP_LOGE(LOG_TAG, "Error (%d) writing access data partition", err);
+            goto fail;
+        }
+
+        // Save access blk
+        err = nvs_set_u32(nvs_config_h, "access_blk", access_blk);
+        if (err != ESP_OK){
+            ESP_LOGE(LOG_TAG, "Error (%d) writing access_blk data", err);
             goto fail;
         }
         err = nvs_commit(nvs_config_h);
         if(err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) writing access data (commit)", err);
+            ESP_LOGE(LOG_TAG, "Error (%d) writing access_blk data (commit)", err);
             goto fail;
         }
         access_chg = false;
+        ESP_LOGI(LOG_TAG, "acces data written to block: %d", access_blk);
     }
+
 fail:
     return err;
 }
@@ -926,10 +976,12 @@ exitfn:
     return err;
 }
 
+
 static esp_err_t reset_flash_config() {
     esp_err_t err = ESP_OK;
 
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
+    // Reset main config
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
     config.cfg_setup = 0;
@@ -939,8 +991,13 @@ static esp_err_t reset_flash_config() {
         goto fail;
     }
     memset(access, 0, sizeof(access));
+    access_blk = 0;
     access_chg = true;
     err = save_access_data();
+    if(err != ESP_OK){
+        goto fail;
+    }
+
 fail:
     return err;
 }
@@ -1046,7 +1103,7 @@ void app_main(void) {
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, cmd_cb, config.cfg_setup));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.cfg_setup));
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -1057,6 +1114,18 @@ void app_main(void) {
             set_actuator(act, act_timers[act] != 0);
             if(act_timers[act] > 0){
                 act_timers[act]--;
+            }
+        }
+
+        for (int conn = 0; conn < CONFIG_BT_ACL_CONNECTIONS; conn ++){
+            if(session[conn].connected){
+                if(session[conn].conn_timeout > 0){
+                    session[conn].conn_timeout --;
+                    if(!session[conn].conn_timeout){
+                        gatts_close_connection(conn, session[conn].gatts_if);
+                        ESP_LOGI(LOG_TAG, "[%d] session wdt timeout", conn);
+                    }
+                }
             }
         }
 

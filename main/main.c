@@ -51,6 +51,7 @@ static int const actuators[] = ACTUATORS_GPIO;
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static esp_err_t save_access_data();
+static uint32_t get_access_data(uint32_t idx);
 static int set_access_data(uint32_t idx, uint32_t ts);
 static void clear_session(uint16_t conn);
 // --- End Function definitions
@@ -73,7 +74,7 @@ static nvs_handle nvs_config_h;
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
-#define RX_BUFFER_SIZE 1024
+#define RX_BUFFER_SIZE 2048
 #define DEF_CONN_TIMEOUT 100
 SemaphoreHandle_t session_sem;
 
@@ -706,7 +707,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     if(strcmp(cmd_str, "q") == 0) { // Quit
         if (session[conn].upgrade_on_bye) {
             session[conn].upgrade_on_bye = false;
-            set_access_data(session[conn].key_id, session[conn].key_version + 1);
+            set_access_data(session[conn].key_id, get_access_data(session[conn].key_id) + 1);
         }
         ret = 1;
         goto exitok;
@@ -803,7 +804,6 @@ static int disconnect_cb(uint16_t conn) {
 }
 
 static int cmd_cb(uint16_t conn) {
-    int retval = 0;
     int ret = 0;
 
     ESP_LOGI(LOG_TAG, "[%d] Command: %s", conn, session[conn].rx_buffer);
@@ -818,9 +818,13 @@ static int cmd_cb(uint16_t conn) {
     }
     if(ret != 0) {
         session[conn].login = false; // Logout on unrecoverable error
+        if(session[conn].conn_timeout > 2){
+            session[conn].conn_timeout = 2; // Set timeout to 200ms (allow last response to be sent and close)
+        }
+    } else {
+        session[conn].conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
     }
-    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
-    return retval;
+    return 0;
 }
 
 static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
@@ -940,6 +944,13 @@ static esp_err_t save_access_data() {
 
 fail:
     return err;
+}
+
+
+static uint32_t get_access_data(uint32_t idx){
+    
+    assert(idx < MAX_ACCESS_ENTRIES);
+    return access[idx];
 }
 
 static int set_access_data(uint32_t idx, uint32_t ts){

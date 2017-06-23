@@ -818,8 +818,8 @@ static int cmd_cb(uint16_t conn) {
     }
     if(ret != 0) {
         session[conn].login = false; // Logout on unrecoverable error
-        if(session[conn].conn_timeout > 2){
-            session[conn].conn_timeout = 2; // Set timeout to 200ms (allow last response to be sent and close)
+        if(session[conn].conn_timeout > 5){
+            session[conn].conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
         }
     } else {
         session[conn].conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 

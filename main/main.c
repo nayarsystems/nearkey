@@ -214,7 +214,7 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
             goto exitfn;
         }
         if(cmd_entry->type == cJSON_String) {
-            if(strcmp(cmd, cmd_entry->valuestring) == 0) {
+            if ((strcmp("*", cmd_entry->valuestring) == 0) || (strcmp(cmd, cmd_entry->valuestring) == 0)) {
                 ret = 0;
                 goto exitfn;
             }

@@ -107,6 +107,11 @@ static uint32_t reset_tm;
 static bool erase_on_reset;
 // --- End Reset timer
 
+// Reset button timer
+#define RESET_BUTTON_TIME 30 // 3 seconds
+static uint32_t reset_button_tm;
+// --- End Reset button timer
+
 /*static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     const char* hexconv = "0123456789abcdef";
 
@@ -1089,6 +1094,8 @@ static void setup_gpio() {
     io_conf.pull_up_en = 0;
     // configure GPIO with the given settings
     gpio_config(&io_conf);
+
+    reset_button_tm = RESET_BUTTON_TIME;
 }
 
 static void set_actuator(int act, int st) {
@@ -1141,10 +1148,17 @@ void app_main(void) {
         }
 
         if(get_reset_button() == 0) {
-            ESP_LOGI(LOG_TAG, "Reset button!!!!");
-            act_timers[0] = DEF_ACT_TIMEOUT;
-            reset_tm = DEF_ACT_TIMEOUT + 1;
+            if (reset_button_tm > 0) {
+                reset_button_tm --;
+                ESP_LOGW(LOG_TAG, "Reset button [%u]", reset_button_tm);
+            }
+        } else {
+            if(reset_button_tm > 0) {
+                reset_button_tm = RESET_BUTTON_TIME;
+            } else {
+            reset_tm = 1;
             erase_on_reset = true;
+            }
         }
 
         if(reset_tm > 0) {

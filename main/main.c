@@ -27,15 +27,20 @@
 
 #define LOG_TAG "MAIN"
 
+
+
 // Boards config
+// Olimex EVB 
 #ifdef CONFIG_VK_BOARD_OLIMEX_EVB
-#define ACTUATORS_GPIO \
-    { 32, 33 }
+#define ACTUATORS_GPIO { 32, 33 }
+#define ACTUATORS_TOUT { 10, 10}
+#define STATUS_LED_GPIO -1
 #define RESET_BUTTON_GPIO 34
 #endif
 
-static int const actuators[] = ACTUATORS_GPIO;
-#define num_actuators (sizeof(actuators) / sizeof(actuators[0]))
+static int const act_tout[] = ACTUATORS_TOUT;
+static int const act_gpio[] = ACTUATORS_GPIO;
+#define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
 // --- End Boards config
 
 // Errors
@@ -98,8 +103,7 @@ static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // --- End Session stuff
 
 // Actuator timers
-#define DEF_ACT_TIMEOUT 10
-static uint32_t act_timers[num_actuators];
+static int32_t act_timers[MAX_ACTUATORS];
 // --- End Actuator timers
 
 // Reset timer
@@ -293,7 +297,7 @@ static int do_init_config(uint16_t conn, const char* cmd) {
 
     json_resp = cJSON_CreateObject();
     cJSON_AddStringToObject(json_resp, "r", "ok");
-    cJSON_AddNumberToObject(json_resp, "a", num_actuators);
+    cJSON_AddNumberToObject(json_resp, "a", MAX_ACTUATORS);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
     session[conn].conn_timeout = 5;
     ret = 1;
@@ -732,8 +736,12 @@ static int do_cmd(uint16_t conn, const char* cmd) {
 
     if(strlen(cmd_str) >= 2 && cmd_str[0] == 'a' && cmd_str[1] >= '0' && cmd_str[1] <= '9') { // Actuator
         int n = atoi(&cmd_str[1]);
-        if(n >= 0 && n < num_actuators) {
-            act_timers[n] = DEF_ACT_TIMEOUT;
+        if(n >= 0 && n < MAX_ACTUATORS) {
+            if(act_tout[n] < 0 && act_timers[n] < 0){
+                act_timers[n] = 0;
+            } else {
+                act_timers[n] = act_tout[n];
+            }
             ESP_LOGI("CMD", "[%d] shoting actuator %d", conn, n);
         } else {
             ESP_LOGE("CMD", "[%d] actuator %d out of range", conn, n);
@@ -1066,9 +1074,15 @@ static void setup_gpio() {
     gpio_config_t io_conf = {0};
 
     // bit mask of the pins that you want to set as outputs
-    for(int n = 0; n < num_actuators; n++) {
-        io_conf.pin_bit_mask |= ((uint64_t)1 << actuators[n]);
+    for(int n = 0; n < MAX_ACTUATORS; n++) {
+        if (act_gpio[n] < 0){
+            continue;
+        }
+        io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
     }
+#if STATUS_LED_GPIO >= 0    
+    io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
+#endif    
     // disable interrupt
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
     // set as output mode
@@ -1080,37 +1094,53 @@ static void setup_gpio() {
     // configure GPIO with the given settings
     gpio_config(&io_conf);
 
-    io_conf = (gpio_config_t){0};
-    // disable interrupt
-    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-    // set as input mode
-    io_conf.mode = GPIO_MODE_INPUT;
-    // bit mask of the pins that you want to set as inputs
-    // io_conf.pin_bit_mask = (1 << 0);
-    io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON_GPIO);
-    // disable pull-down mode
-    io_conf.pull_down_en = 0;
-    // disable pull-up mode
-    io_conf.pull_up_en = 0;
-    // configure GPIO with the given settings
-    gpio_config(&io_conf);
-
+    
+    if (RESET_BUTTON_GPIO >= 0){
+        io_conf = (gpio_config_t){0};
+        // disable interrupt
+        io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+        // set as input mode
+        io_conf.mode = GPIO_MODE_INPUT;
+        // bit mask of the pins that you want to set as inputs
+        // io_conf.pin_bit_mask = (1 << 0);
+        io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON_GPIO);
+        // disable pull-down mode
+        io_conf.pull_down_en = 0;
+        // disable pull-up mode
+        io_conf.pull_up_en = 0;
+        // configure GPIO with the given settings
+        gpio_config(&io_conf);
+    }
     reset_button_tm = RESET_BUTTON_TIME;
 }
 
+
+static void set_status_led(int st) {
+#if STATUS_LED_GPIO >= 0
+    gpio_set_level(STATUS_LED_GPIO, st);
+#endif
+}
+
 static void set_actuator(int act, int st) {
-    if(act >= 0 && act < num_actuators) {
-        gpio_set_level(actuators[act], st);
+    if(act >= 0 && act < MAX_ACTUATORS) {
+        if (act_gpio[act] >= 0 && act_gpio[act] < GPIO_NUM_MAX) {
+            gpio_set_level(act_gpio[act], st);
+        }
     }
 }
 
 static int get_reset_button() {
-    return gpio_get_level(RESET_BUTTON_GPIO);
+    if (RESET_BUTTON_GPIO >= 0 && RESET_BUTTON_GPIO < GPIO_NUM_MAX){
+        return gpio_get_level(RESET_BUTTON_GPIO);
+    } else {
+        return 1;
+    }
 }
 
 void app_main(void) {
     char chbuf[65];
-
+    bool status_led = false;
+    
     ESP_LOGI(LOG_TAG, "Starting virkey...");
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
@@ -1128,7 +1158,7 @@ void app_main(void) {
         while(!xSemaphoreTake(session_sem, portMAX_DELAY))
             ;
 
-        for (int act = 0; act < num_actuators; act ++){
+        for (int act = 0; act < MAX_ACTUATORS; act ++){
             set_actuator(act, act_timers[act] != 0);
             if(act_timers[act] > 0){
                 act_timers[act]--;
@@ -1147,17 +1177,21 @@ void app_main(void) {
             }
         }
 
-        if(get_reset_button() == 0) {
+        if (get_reset_button() == 0) {
             if (reset_button_tm > 0) {
                 reset_button_tm --;
+                status_led = true;
                 ESP_LOGW(LOG_TAG, "Reset button [%u]", reset_button_tm);
+            } else {
+                status_led = !status_led; // Blink
             }
         } else {
-            if(reset_button_tm > 0) {
+            status_led = false;
+            if (reset_button_tm > 0) {
                 reset_button_tm = RESET_BUTTON_TIME;
             } else {
-            reset_tm = 1;
-            erase_on_reset = true;
+                reset_tm = 1;
+                erase_on_reset = true;
             }
         }
 
@@ -1170,6 +1204,7 @@ void app_main(void) {
                 esp_restart();
             }
         }
+        set_status_led(status_led);
         xSemaphoreGive(session_sem);
     }
 }

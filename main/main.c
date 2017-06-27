@@ -34,7 +34,7 @@
 #ifdef CONFIG_VK_BOARD_OLIMEX_EVB
 #define ACTUATORS_GPIO { 32, 33 }
 #define ACTUATORS_TOUT { 10, 10}
-#define STATUS_LED_GPIO -1
+#define STATUS_LED_GPIO 33
 #define RESET_BUTTON_GPIO 34
 #endif
 
@@ -1130,11 +1130,11 @@ static void set_actuator(int act, int st) {
 }
 
 static int get_reset_button() {
-    if (RESET_BUTTON_GPIO >= 0 && RESET_BUTTON_GPIO < GPIO_NUM_MAX){
-        return gpio_get_level(RESET_BUTTON_GPIO);
-    } else {
-        return 1;
-    }
+#if RESET_BUTTON_GPIO >=0    
+    return gpio_get_level(RESET_BUTTON_GPIO);
+#else
+    return 1
+#endif
 }
 
 void app_main(void) {
@@ -1155,16 +1155,18 @@ void app_main(void) {
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
-        while(!xSemaphoreTake(session_sem, portMAX_DELAY))
-            ;
+        while(!xSemaphoreTake(session_sem, portMAX_DELAY));
 
+        // Update actuators
         for (int act = 0; act < MAX_ACTUATORS; act ++){
             set_actuator(act, act_timers[act] != 0);
             if(act_timers[act] > 0){
                 act_timers[act]--;
             }
         }
-
+        // --- End Update actuators
+        
+        // Close connections on timeout
         for (int conn = 0; conn < CONFIG_BT_ACL_CONNECTIONS; conn ++){
             if(session[conn].connected){
                 if(session[conn].conn_timeout > 0){
@@ -1176,17 +1178,15 @@ void app_main(void) {
                 }
             }
         }
+        // --- End Close connections on timeout
 
+        // Reset Button
         if (get_reset_button() == 0) {
             if (reset_button_tm > 0) {
                 reset_button_tm --;
-                status_led = true;
                 ESP_LOGW(LOG_TAG, "Reset button [%u]", reset_button_tm);
-            } else {
-                status_led = !status_led; // Blink
             }
         } else {
-            status_led = false;
             if (reset_button_tm > 0) {
                 reset_button_tm = RESET_BUTTON_TIME;
             } else {
@@ -1194,7 +1194,20 @@ void app_main(void) {
                 erase_on_reset = true;
             }
         }
+        // --- End Reset Button
 
+        // Status LED
+        if (get_reset_button() == 0 && reset_button_tm > 0){ // LED On
+            status_led = true;
+        } else if ((get_reset_button() == 0 && reset_button_tm == 0) || (config.cfg_setup == 0)) { // LED Blink
+            status_led = !status_led;
+        } else {
+            status_led = false;
+        }
+        set_status_led(status_led);
+        // --- End Status LED
+
+        // Reset timer
         if(reset_tm > 0) {
             reset_tm--;
             if(!reset_tm) {
@@ -1204,7 +1217,8 @@ void app_main(void) {
                 esp_restart();
             }
         }
-        set_status_led(status_led);
+        // --- End Reset Timer
+
         xSemaphoreGive(session_sem);
     }
 }

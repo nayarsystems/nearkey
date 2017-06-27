@@ -187,6 +187,22 @@ exitfn:
     return res;
 }
 
+static int cmp_perm(const char *perm, const char *cmd){
+    int ret = 0;
+
+    for(int n = 0;;n++){
+        if (perm[n] == '*' || (perm[n] == 0 && cmd[n] == 0)) {
+            ret = 0;
+            break;
+        }
+        if (perm[n] != cmd[n]) {
+            ret = 1;
+            break;
+        }
+    }
+    return ret;
+}
+
 static int chk_cmd_access(uint16_t conn, const char* cmd) {
     int ret = 0;
     int cmdl_size = 0;
@@ -214,7 +230,7 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
             goto exitfn;
         }
         if(cmd_entry->type == cJSON_String) {
-            if ((strcmp("*", cmd_entry->valuestring) == 0) || (strcmp(cmd, cmd_entry->valuestring) == 0)) {
+            if (cmp_perm(cmd_entry->valuestring, cmd) == 0) {
                 ret = 0;
                 goto exitfn;
             }

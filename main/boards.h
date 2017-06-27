@@ -1,3 +1,9 @@
+#pragma once 
+
+// Custom board
+#ifdef CONFIG_VK_BOARD_CUSTOM
+#include "custom_board.h"
+#endif
 
 // Olimex EVB 
 #ifdef CONFIG_VK_BOARD_OLIMEX_EVB

@@ -19,7 +19,6 @@
 
 #include "bt.h"
 #include "bta_api.h"
-#include "bufio.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"

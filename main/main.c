@@ -24,20 +24,11 @@
 #include "nvs_flash.h"
 #include "parseutils.h"
 #include "utils.h"
+#include "boards.h"
 
 #define LOG_TAG "MAIN"
 
-
-
 // Boards config
-// Olimex EVB 
-#ifdef CONFIG_VK_BOARD_OLIMEX_EVB
-#define ACTUATORS_GPIO { 32, 33 }
-#define ACTUATORS_TOUT { 10, 10}
-#define STATUS_LED_GPIO 33
-#define RESET_BUTTON_GPIO 34
-#endif
-
 static int const act_tout[] = ACTUATORS_TOUT;
 static int const act_gpio[] = ACTUATORS_GPIO;
 #define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))

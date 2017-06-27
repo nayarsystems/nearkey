@@ -4,14 +4,16 @@ choice
     prompt "Board"
     help
         Selects Virkey targer board.
+    config VK_BOARD_CUSTOM
+        bool "Custom board"
+        help
+            Selects custom board configuration from main/custom_board.h file.
+            See boards.h file to get examples.
     config VK_BOARD_OLIMEX_EVB
         bool "OLIMEX ESP32 EVB"
         help
             Selects Olimex ESP32 evaluation board.
-    config VK_BOARD_OLIMEX_CORE
-        bool "OLIMEX ESP32 CoreBoard"
-        help
-            Selects Olimex ESP32 core board.
+            https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware
             
 endchoice
 

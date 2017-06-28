@@ -59,8 +59,8 @@ static void clear_session(uint16_t conn);
 
 static struct config_s {
     uint32_t cfg_version;
-    uint32_t cfg_setup;
     uint8_t master_key[32];
+    uint8_t vk_id[6];
 } __attribute__((packed)) config;
 
 static bool access_chg;
@@ -277,6 +277,8 @@ static int do_init_config(uint16_t conn, const char* cmd) {
         ret = 1;
         goto exitfn;
     }
+
+    // Decode master key
     json_item = cJSON_GetObjectItem(json_obj, "m");
     if(json_item == NULL) {
         ESP_LOGE("CONFIG", "[%d] config command hasn't [m] entry", conn);
@@ -299,7 +301,31 @@ static int do_init_config(uint16_t conn, const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    config.cfg_setup = 1;
+
+    // Decode virkey id
+    json_item = cJSON_GetObjectItem(json_obj, "i");
+    if(json_item == NULL) {
+        ESP_LOGE("CONFIG", "[%d] config command hasn't [i] entry", conn);
+        ret = 1;
+        goto exitfn;
+    }
+    if(!(json_item->type & cJSON_String)) {
+        ESP_LOGE("CONFIG", "[%d] JSON entry [i] isn't string type", conn);
+        ret = 1;
+        goto exitfn;
+    }
+    if(mbedtls_base64_decode(config.vk_id, sizeof(config.vk_id), &olen, (uint8_t*)json_item->valuestring,
+                             strlen(json_item->valuestring)) != 0) {
+        ESP_LOGE("CONFIG", "[%d] Error decoding virkey id.", conn);
+        ret = 1;
+        goto exitfn;
+    }
+    if(olen != sizeof(config.vk_id)) {
+        ESP_LOGE("CONFIG", "[%d] virkey id size mismatch: %d != %d", conn, olen, sizeof(config.master_key));
+        ret = 1;
+        goto exitfn;
+    }
+
     save_flash_config();
     reset_tm = 2;
 
@@ -336,8 +362,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     char* nonce_data;
     cJSON* json_item = NULL;
     cJSON* json_resp = NULL;
-    uint8_t lmac[6];
-    const uint8_t* mac;
+    uint8_t vk_id[6];
     size_t olen;
     uint8_t sig_calc[32] = {0};
     uint8_t sig_peer[32] = {0};
@@ -424,9 +449,10 @@ static int do_login(uint16_t conn, const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    // Check login mac
-    olen = sizeof(lmac);
-    if(mbedtls_base64_decode(lmac, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
+
+    // Check virkey ID
+    olen = sizeof(vk_id);
+    if(mbedtls_base64_decode(vk_id, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
        0) {
         ESP_LOGE("LOGIN", "[%d] Error decoding MAC address", conn);
         ret = 1;
@@ -437,18 +463,13 @@ static int do_login(uint16_t conn, const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    mac = esp_bt_dev_get_address();
-    if(mac == NULL) {
-        ESP_LOGE("CMD", "[%d] Unable to read bluetooth MAC address", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(memcmp(lmac, mac, 6) != 0) {
-        ESP_LOGE("CMD", "[%d] MAC address don't match", conn);
+    if(memcmp(vk_id, config.vk_id, sizeof(config.vk_id)) != 0) {
+        ESP_LOGE("CMD", "[%d] virkey ID don't match", conn);
         ret = 1;
         goto exitfn;
     }
 
+    // Check login timestamp
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "v");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "[%d] Login object hasn't [v] entry", conn);
@@ -795,6 +816,15 @@ static void clear_session(uint16_t conn){
     save_access_data();
 }
 
+static bool is_configured(){
+    for(int n = 0; n < sizeof(config.vk_id); n++){
+        if (config.vk_id[n] != 0){
+            return true;
+        }
+    }
+    return false;
+}
+
 static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr) {
     int ret = 0;
 
@@ -831,7 +861,7 @@ static int cmd_cb(uint16_t conn) {
 
     ESP_LOGI(LOG_TAG, "[%d] Command: %s", conn, session[conn].rx_buffer);
     if(!session[conn].login) {
-        if(config.cfg_setup == 0) {
+        if(!is_configured()) {
             ret = do_init_config(conn, session[conn].rx_buffer);
         } else {
             ret = do_login(conn, session[conn].rx_buffer);
@@ -1018,8 +1048,6 @@ static esp_err_t reset_flash_config() {
     // Reset main config
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
-    config.cfg_setup = 0;
-    memset(config.master_key, 0, sizeof(config.master_key));
     err = save_flash_config();
     if(err != ESP_OK){
         goto fail;
@@ -1161,7 +1189,7 @@ void app_main(void) {
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.cfg_setup));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.vk_id));
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -1209,7 +1237,7 @@ void app_main(void) {
         // Status LED
         if (get_reset_button() == 0 && reset_button_tm > 0){ // LED On
             status_led = true;
-        } else if ((get_reset_button() == 0 && reset_button_tm == 0) || (config.cfg_setup == 0)) { // LED Blink
+        } else if ((get_reset_button() == 0 && reset_button_tm == 0) || (!is_configured())) { // LED Blink
             status_led = !status_led;
         } else {
             status_led = false;

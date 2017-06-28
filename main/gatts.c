@@ -52,11 +52,11 @@ static uint8_t raw_adv_data[] = {
     0x11, // 128 bit services field size
     0x07, // 128 bit services complete list
     0x13, 0x1e, 0x48, 0x11, 0xc2, 0x5c, 0x2c, 0xa6, 0xd2, 0x45, 0x34, 0x81, 0x00, 0x00, 0x00, 0x00, // Service
-    0x05, 0x20, 0x01, 0x00, 0x00, 0x00                                                              // Key index
+    0x09, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00                                      // Virkey ID
 };
 
 static uint8_t* adv_uuid = &raw_adv_data[5];
-static uint8_t* adv_key_counter = &raw_adv_data[23];
+static uint8_t* virkey_id = &raw_adv_data[23];
 
 static uint8_t raw_scan_rsp_data[] = {0x02, // Flags field size
                                       0x01, // Flags
@@ -325,13 +325,13 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 int init_gatts(gatts_connect_cb_t conn_cb,
                gatts_disconnect_cb_t disconn_cb,
                gatts_rx_cb_t cmd_cb,
-               uint32_t key_counter) {
+               const uint8_t *vk_id) {
     esp_err_t ret;
 
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
     gatts_rx_cb = cmd_cb;
-    memcpy(adv_key_counter, &key_counter, sizeof(key_counter)); // Warning. Endianess dependent !!!
+    memcpy(virkey_id, vk_id, 6);
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);

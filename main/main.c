@@ -26,6 +26,7 @@
 #include "utils.h"
 #include "boards.h"
 
+#define FW_VER "1.0"
 #define LOG_TAG "MAIN"
 
 // Boards config
@@ -306,6 +307,7 @@ static int do_init_config(uint16_t conn, const char* cmd) {
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", MAX_ACTUATORS);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
+    cJSON_AddStringToObject(json_resp, "v", FW_VER);
     session[conn].conn_timeout = 5;
     ret = 1;
 
@@ -494,6 +496,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     }
 
     cJSON_AddStringToObject(json_resp, "r", "ok");
+    cJSON_AddStringToObject(json_resp, "v", FW_VER);
     session[conn].login = true;
 
 exitfn:

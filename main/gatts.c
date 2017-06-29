@@ -56,7 +56,7 @@ static uint8_t raw_adv_data[] = {
 };
 
 static uint8_t* adv_uuid = &raw_adv_data[5];
-static uint8_t* virkey_id = &raw_adv_data[23];
+static uint8_t* virkey_id = &raw_adv_data[25];
 
 static uint8_t raw_scan_rsp_data[] = {0x02, // Flags field size
                                       0x01, // Flags
@@ -89,6 +89,8 @@ static gatts_rx_cb_t gatts_rx_cb;
 #define PROFILE_NUM 1
 #define PROFILE_A_APP_ID 0
 
+static uint16_t notif_stats[CONFIG_BT_ACL_CONNECTIONS];
+
 struct gatts_profile_inst {
     esp_gatts_cb_t gatts_cb;
     //bool connected;
@@ -101,8 +103,6 @@ struct gatts_profile_inst {
     esp_gatt_perm_t perm;
     uint16_t descr_handle;
     esp_bt_uuid_t descr_uuid;
-    uint16_t descr_val;
-    bool notif;
 };
 
 /* One gatt-based profile one app_id and one gatts_if, this array will store the gatts_if returned by ESP_GATTS_REG_EVT
@@ -170,11 +170,25 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
+            ESP_LOGI(LOG_TAG, "Lectura del descriptor........");
             rsp.attr_value.len = 2;
-            memcpy(&rsp.attr_value.value[0], &gl_profile_tab[PROFILE_A_APP_ID].descr_val, 2);
+            memcpy(&rsp.attr_value.value[0], &notif_stats[param->read.conn_id], 2);
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             break;
         }
+        if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle) {
+            rsp.attr_value.len = 1;
+            rsp.attr_value.value[0] = 0;
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
+            ESP_LOGI(LOG_TAG, "Lectura de char handle");
+            break;
+        }
+        if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].service_handle) {
+            ESP_LOGI(LOG_TAG, "Lectura de service handle");
+            break;
+        }
+        ESP_LOGI(LOG_TAG, "Lectura desconocida");
+        
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
@@ -183,12 +197,10 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         int res = 0;
 
         if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
-            gl_profile_tab[PROFILE_A_APP_ID].descr_val = *((uint16_t*)param->write.value);
-            if(gl_profile_tab[PROFILE_A_APP_ID].descr_val & 1) {
-                gl_profile_tab[PROFILE_A_APP_ID].notif = true;
+            notif_stats[param->write.conn_id] = *((uint16_t*)param->write.value);
+            if(notif_stats[param->write.conn_id] & 1) {
                 ESP_LOGI(LOG_TAG, "Notifications enabled")
             } else {
-                gl_profile_tab[PROFILE_A_APP_ID].notif = false;
                 ESP_LOGI(LOG_TAG, "Notifications disabled")
             }
             if(param->write.need_rsp) {

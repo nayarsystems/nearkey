@@ -165,43 +165,40 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_READ_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_READ_EVT, conn_id %d, trans_id %d, handle %d", param->read.conn_id,
+        ESP_LOGI(LOG_TAG, "[%d] GATT_READ_EVT, trans_id %d, handle %d", param->read.conn_id,
                  param->read.trans_id, param->read.handle);
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
-            ESP_LOGI(LOG_TAG, "Lectura del descriptor........");
+            ESP_LOGI(LOG_TAG, "descriptor read");
             rsp.attr_value.len = 2;
             memcpy(&rsp.attr_value.value[0], &notif_stats[param->read.conn_id], 2);
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             break;
         }
         if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle) {
-            rsp.attr_value.len = 1;
-            rsp.attr_value.value[0] = 0;
-            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
-            ESP_LOGI(LOG_TAG, "Lectura de char handle");
-            break;
+            ESP_LOGW(LOG_TAG, "char handle read");
+        } else if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].service_handle) {
+            ESP_LOGW(LOG_TAG, "service handle read");
+        } else {
+            ESP_LOGW(LOG_TAG, "unknown read");
         }
-        if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].service_handle) {
-            ESP_LOGI(LOG_TAG, "Lectura de service handle");
-            break;
-        }
-        ESP_LOGI(LOG_TAG, "Lectura desconocida");
-        
+        rsp.attr_value.len = 1;
+        rsp.attr_value.value[0] = 0;
+        esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp); //Default response
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
-        ESP_LOGI(LOG_TAG, "GATT_WRITE_EVT, conn_id %d, trans_id %d, handle %d, len %d, resp %d", param->write.conn_id,
+        ESP_LOGI(LOG_TAG, "[%d] GATT_WRITE_EVT, trans_id %d, handle %d, len %d, resp %d", param->write.conn_id,
                  param->write.trans_id, param->write.handle, param->write.len, param->write.need_rsp);
         int res = 0;
 
         if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
             notif_stats[param->write.conn_id] = *((uint16_t*)param->write.value);
             if(notif_stats[param->write.conn_id] & 1) {
-                ESP_LOGI(LOG_TAG, "Notifications enabled")
+                ESP_LOGI(LOG_TAG, "[%d] Notifications enabled", param->write.conn_id)
             } else {
-                ESP_LOGI(LOG_TAG, "Notifications disabled")
+                ESP_LOGI(LOG_TAG, "[%d] Notifications disabled", param->write.conn_id)
             }
             if(param->write.need_rsp) {
                 esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
@@ -229,9 +226,8 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_EXEC_WRITE_EVT:
-        ESP_LOGI(LOG_TAG, "GATT_EXEC_WRITE_EVT, conn_id %d, trans_id %d", param->exec_write.conn_id,
+        ESP_LOGI(LOG_TAG, "[%d] GATT_EXEC_WRITE_EVT, trans_id %d", param->exec_write.conn_id,
                  param->exec_write.trans_id);
-
         esp_ble_gatts_send_response(gatts_if, param->exec_write.conn_id, param->exec_write.trans_id, ESP_GATT_OK, NULL);
         break;
     case ESP_GATTS_MTU_EVT:
@@ -294,6 +290,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_DISCONNECT_EVT:
         if(gatts_disconnect_cb != NULL) {
             gatts_disconnect_cb(param->disconnect.conn_id);
+            notif_stats[param->disconnect.conn_id] = 0;
         }
         esp_ble_gap_start_advertising(&test_adv_params);
         break;

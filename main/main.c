@@ -26,7 +26,7 @@
 #include "utils.h"
 #include "boards.h"
 
-#define FW_VER "1.0"
+#define FW_VER "1.1"
 #define LOG_TAG "MAIN"
 
 // Boards config
@@ -72,7 +72,7 @@ static nvs_handle nvs_config_h;
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
 #define RX_BUFFER_SIZE 2048
-#define DEF_CONN_TIMEOUT 100
+#define DEF_CONN_TIMEOUT 300
 SemaphoreHandle_t session_sem;
 
 typedef struct session_s {
@@ -749,7 +749,8 @@ static int do_cmd(uint16_t conn, const char* cmd) {
             session[conn].upgrade_on_bye = false;
             set_access_data(session[conn].key_id, get_access_data(session[conn].key_id) + 1);
         }
-        ret = 1;
+        session[conn].login = false;
+        ret = 0;
         goto exitok;
     }
 

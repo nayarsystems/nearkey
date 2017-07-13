@@ -1,3 +1,5 @@
+#pragma once
+
 #include "esp_bt_defs.h"
 
 typedef int (*gatts_connect_cb_t)(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr);

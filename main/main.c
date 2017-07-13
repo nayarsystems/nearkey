@@ -25,6 +25,7 @@
 #include "parseutils.h"
 #include "utils.h"
 #include "boards.h"
+#include "PCF8563.h"
 
 #define FW_VER "1.1"
 #define LOG_TAG "MAIN"
@@ -1176,11 +1177,51 @@ static int get_reset_button() {
 #endif
 }
 
+void init_rtc(void){
+    int ret;
+
+    PCF_DateTime date = {0};
+
+    ret = PCF_Init(0);
+    if (ret != 0) {
+        ESP_LOGI(LOG_TAG, "Error iniciando PCF %d", PCF_GetLastError());    
+        goto fail;
+    }
+    // First time set date
+    date.year = 2017;
+    date.month = 7;
+    date.day = 13;
+    date.hour = 13;
+    date.minute = 15;
+    date.second = 0;
+    date.weekday = 5;
+    // ret = PCF_SetDateTime(&date);
+    //     if (ret != 0) {
+    //     ESP_LOGI(LOG_TAG, "Error escribiendo fecha %d ", PCF_GetLastError());    
+    //     goto fail;
+    // }
+
+
+    ret = PCF_GetDateTime(&date);
+    if (ret == -1) {
+        ESP_LOGI(LOG_TAG, "Error leyendo fecha %d ", PCF_GetLastError());    
+        goto fail;
+    }
+
+    if (ret == 1) {
+        ESP_LOGI(LOG_TAG, "Integridad de la fecha no garantizada");    
+    }
+    printf("Year:%d, Month:%d, Day:%d, Hour:%d, Minute:%d, Second:%d", (int) date.year, (int) date.month, (int) date.day, (int) date.hour, (int) date.minute, (int) date.second);
+fail:
+    return;
+}
+
 void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
+    init_rtc();
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();

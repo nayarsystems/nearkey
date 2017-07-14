@@ -8,6 +8,7 @@
 
 #include "cJSON.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_event_loop.h"
@@ -25,7 +26,7 @@
 #include "parseutils.h"
 #include "utils.h"
 #include "boards.h"
-#include "PCF8563.h"
+#include "hwrtc.h"
 
 #define FW_VER "1.1"
 #define LOG_TAG "MAIN"
@@ -55,13 +56,14 @@ static void clear_session(uint16_t conn);
 // --- End Function definitions
 
 // Config stuff
-#define CFG_VERSION 3
+#define CFG_VERSION 4
 #define MAX_ACCESS_ENTRIES 1024
 
 static struct config_s {
     uint32_t cfg_version;
     uint8_t master_key[32];
     uint8_t vk_id[6];
+    char tz[64];
 } __attribute__((packed)) config;
 
 static bool access_chg;
@@ -1050,6 +1052,7 @@ static esp_err_t reset_flash_config() {
     // Reset main config
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
+    strcpy(config.tz, "UTC");
     err = save_flash_config();
     if(err != ESP_OK){
         goto fail;
@@ -1105,6 +1108,7 @@ static esp_err_t load_flash_config() {
         goto exitfn;
     }
     ESP_LOGI(LOG_TAG, "Config loaded")
+    ESP_LOGI(LOG_TAG, "Timezone:%s", config.tz);
     err = ESP_OK;
 exitfn:
     return err;
@@ -1152,6 +1156,21 @@ static void setup_gpio() {
         gpio_config(&io_conf);
     }
     reset_button_tm = RESET_BUTTON_TIME;
+
+#ifdef I2C_SCL_GPIO
+    // I2C setup
+    i2c_config_t conf = {0};
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = I2C_SDA_GPIO;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_io_num = I2C_SCL_GPIO;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = I2C_FREQ;
+    esp_err_t ret = i2c_param_config(I2C_NUM_0, &conf);
+    assert(ret == ESP_OK);
+	ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+    assert(ret == ESP_OK);
+#endif
 }
 
 
@@ -1177,57 +1196,27 @@ static int get_reset_button() {
 #endif
 }
 
-void init_rtc(void){
-    int ret;
-
-    PCF_DateTime date = {0};
-
-    ret = PCF_Init(0);
-    if (ret != 0) {
-        ESP_LOGI(LOG_TAG, "Error iniciando PCF %d", PCF_GetLastError());    
-        goto fail;
-    }
-    // First time set date
-    date.year = 2017;
-    date.month = 7;
-    date.day = 13;
-    date.hour = 13;
-    date.minute = 15;
-    date.second = 0;
-    date.weekday = 5;
-    // ret = PCF_SetDateTime(&date);
-    //     if (ret != 0) {
-    //     ESP_LOGI(LOG_TAG, "Error escribiendo fecha %d ", PCF_GetLastError());    
-    //     goto fail;
-    // }
-
-
-    ret = PCF_GetDateTime(&date);
-    if (ret == -1) {
-        ESP_LOGI(LOG_TAG, "Error leyendo fecha %d ", PCF_GetLastError());    
-        goto fail;
-    }
-
-    if (ret == 1) {
-        ESP_LOGI(LOG_TAG, "Integridad de la fecha no garantizada");    
-    }
-    printf("Year:%d, Month:%d, Day:%d, Hour:%d, Minute:%d, Second:%d", (int) date.year, (int) date.month, (int) date.day, (int) date.hour, (int) date.minute, (int) date.second);
-fail:
-    return;
-}
 
 void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
-    init_rtc();
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     ESP_ERROR_CHECK(load_access_data());
+#ifdef RTC_DRIVER    
+    if (hctosys(config.tz) != 0) {
+        ESP_LOGE(LOG_TAG, "Error reading hardware clock");
+    }
+#endif
+    time_t now = time(NULL);
+    ESP_LOGI(LOG_TAG, "Current time: %s", ctime(&now));
+
+
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
 

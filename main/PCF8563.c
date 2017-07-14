@@ -1,31 +1,18 @@
+#include "boards.h"
+
+#ifdef RTC_DRIVER_PCF8563
+
+#include "esp_system.h"
 #include "PCF8563.h"
 #include "driver/i2c.h"
+#include "hwrtc.h"
 
-#define PCF_I2C_BUS I2C_NUM_0
+#include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
+
 
 static esp_err_t last_i2c_err = ESP_OK; 
-
-static esp_err_t PCF_I2C_Init()
-{
-
-	last_i2c_err = ESP_OK;
-	i2c_config_t conf = {0};
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = 13;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = 16;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = 100000;
-    esp_err_t ret = i2c_param_config(PCF_I2C_BUS, &conf);
-	if (ret != ESP_OK) {
-		goto fail;
-	}
-	ret = i2c_driver_install(PCF_I2C_BUS, conf.mode, 0, 0, 0);
-fail:
-	last_i2c_err = ret;
-	return ret;
-}
-
 
 esp_err_t PCF_Write(uint8_t addr, uint8_t *data, size_t count) {
 
@@ -36,7 +23,7 @@ esp_err_t PCF_Write(uint8_t addr, uint8_t *data, size_t count) {
 	i2c_master_write_byte(cmd, addr, true);
 	i2c_master_write(cmd, data, count, true);
 	i2c_master_stop(cmd);
-	esp_err_t ret = i2c_master_cmd_begin(PCF_I2C_BUS, cmd, 1000 / portTICK_PERIOD_MS);
+	esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_PERIOD_MS);
     i2c_cmd_link_delete(cmd);
 	last_i2c_err = ret;
     return ret;
@@ -54,7 +41,7 @@ esp_err_t PCF_Read(uint8_t addr, uint8_t *data, size_t count) {
 	i2c_master_write_byte(cmd, PCF8563_READ_ADDR, true);
 	i2c_master_read(cmd, data, count, false);
 	i2c_master_stop(cmd);
-	esp_err_t ret = i2c_master_cmd_begin(PCF_I2C_BUS, cmd, 1000 / portTICK_PERIOD_MS);
+	esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_PERIOD_MS);
     i2c_cmd_link_delete(cmd);
 	last_i2c_err = ret;
     return ret;
@@ -67,21 +54,19 @@ esp_err_t PCF_GetLastError(){
 #define BinToBCD(bin) ((((bin) / 10) << 4) + ((bin) % 10))
 
 int PCF_Init(uint8_t mode){
-	
-	esp_err_t ret = PCF_I2C_Init();
-	if (ret != ESP_OK){
-		return -1;
-	}
-
-	uint8_t tmp = 0b00000000;
-	ret = PCF_Write(0x00, &tmp, 1);
-	if (ret != ESP_OK){
-		return -1;
-	}
-	mode &= 0b00010011;
-	ret = PCF_Write(0x01, &mode, 1);
-	if (ret != ESP_OK){
-		return -1;
+	static bool init = false;
+	if(!init){
+		uint8_t tmp = 0b00000000;
+		esp_err_t ret = PCF_Write(0x00, &tmp, 1);
+		if (ret != ESP_OK){
+			return -1;
+		}
+		mode &= 0b00010011;
+		ret = PCF_Write(0x01, &mode, 1);
+		if (ret != ESP_OK){
+			return -1;
+		}
+		init = true;
 	}
 	return 0;
 }
@@ -235,3 +220,64 @@ int PCF_GetDateTime(PCF_DateTime *dateTime) {
 
 	return 0;
 }
+
+int hctosys(const char* tz){
+	int ret;
+	PCF_DateTime date = {0};
+	struct tm tm = {0};
+	struct timeval tv = {0};
+	
+	ret = PCF_Init(0);
+	if (ret != 0) {
+		goto fail;
+	}
+    ret = PCF_GetDateTime(&date);
+    if (ret != 0) {
+		goto fail;
+    }
+	tm.tm_sec = date.second;
+	tm.tm_min = date.minute;
+	tm.tm_hour = date.hour;
+	tm.tm_mday = date.day;
+	tm.tm_mon = date.month - 1;
+	tm.tm_year = date.year - 1900;
+
+    setenv("TZ", "UTC", 1);
+    tzset();
+	tv.tv_sec = mktime(&tm);
+	tv.tv_usec = 0;
+	ret = settimeofday(&tv, NULL);
+fail:
+    setenv("TZ", tz, 1);
+    tzset();
+	return ret;
+}
+
+int systohc(){
+	int ret;
+	PCF_DateTime date = {0};
+	struct tm tm = {0};
+
+	ret = PCF_Init(0);
+	if (ret != 0) {
+		goto fail;
+	}
+
+	time_t now = time(NULL);
+	gmtime_r(&now, &tm);
+	date.second = tm.tm_sec;
+	date.minute = tm.tm_min;
+	date.hour = tm.tm_hour;
+	date.day = tm.tm_mday;
+	date.month = tm.tm_mon + 1;
+	date.year = tm.tm_year + 1900;
+	date.weekday = tm.tm_wday;
+
+	ret = PCF_SetDateTime(&date);
+
+fail:
+	return ret;
+}
+
+
+#endif //RTC_DRIVER_PCF8563

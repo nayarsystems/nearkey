@@ -131,14 +131,14 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(LOG_TAG, "Advertising start failed");
         } else {
-            ESP_LOGI(LOG_TAG, "Start adv successfully");
+            ESP_LOGD(LOG_TAG, "Start adv successfully");
         }
         break;
     case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
         if(param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(LOG_TAG, "Advertising stop failed");
         } else {
-            ESP_LOGI(LOG_TAG, "Stop adv successfully");
+            ESP_LOGD(LOG_TAG, "Stop adv successfully");
         }
         break;
     default:
@@ -170,16 +170,16 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
         if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
-            ESP_LOGI(LOG_TAG, "descriptor read");
+            ESP_LOGD(LOG_TAG, "descriptor read");
             rsp.attr_value.len = 2;
             memcpy(&rsp.attr_value.value[0], &notif_stats[param->read.conn_id], 2);
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             break;
         }
         if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle) {
-            ESP_LOGW(LOG_TAG, "char handle read");
+            ESP_LOGD(LOG_TAG, "char handle read");
         } else if(param->read.handle == gl_profile_tab[PROFILE_A_APP_ID].service_handle) {
-            ESP_LOGW(LOG_TAG, "service handle read");
+            ESP_LOGD(LOG_TAG, "service handle read");
         } else {
             ESP_LOGW(LOG_TAG, "unknown read");
         }
@@ -189,7 +189,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_WRITE_EVT: {
-        ESP_LOGI(LOG_TAG, "[%d] GATT_WRITE_EVT, trans_id %d, handle %d, len %d, resp %d", param->write.conn_id,
+        ESP_LOGD(LOG_TAG, "[%d] GATT_WRITE_EVT, trans_id %d, handle %d, len %d, resp %d", param->write.conn_id,
                  param->write.trans_id, param->write.handle, param->write.len, param->write.need_rsp);
         int res = 0;
 
@@ -226,7 +226,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         break;
     }
     case ESP_GATTS_EXEC_WRITE_EVT:
-        ESP_LOGI(LOG_TAG, "[%d] GATT_EXEC_WRITE_EVT, trans_id %d", param->exec_write.conn_id,
+        ESP_LOGD(LOG_TAG, "[%d] GATT_EXEC_WRITE_EVT, trans_id %d", param->exec_write.conn_id,
                  param->exec_write.trans_id);
         esp_ble_gatts_send_response(gatts_if, param->exec_write.conn_id, param->exec_write.trans_id, ESP_GATT_OK, NULL);
         break;
@@ -400,7 +400,7 @@ ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const char* res
         if(res != ESP_OK) {
             ESP_LOGE(LOG_TAG, "Error sending notification");
         } else {
-            ESP_LOGI(LOG_TAG, "Notification sent");
+            ESP_LOGD(LOG_TAG, "Notification sent");
         }
         len -= chunk_len;
         ptr += chunk_len;

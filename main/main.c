@@ -365,7 +365,7 @@ static int do_init_config(uint16_t conn, const char* cmd) {
         ret = 1;
         goto exitfn;
     }
-    strncpy(config.tz, json_item->valuestring, sizeof(config.tz) - 1);
+    strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
 
     save_flash_config();
 
@@ -759,7 +759,7 @@ static int do_cmd_tzs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
         ret = 0;
         goto fail;
     }
-    strncpy(config.tz, json_item->valuestring, sizeof(config.tz) - 1);
+    strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
     setenv("TZ", config.tz, 1);
     tzset();
     save_flash_config();

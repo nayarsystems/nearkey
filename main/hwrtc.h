@@ -1,4 +1,4 @@
 #pragma once
 
-int hctosys(const char* tz);
-int systohc();
+int hctosys(void);
+int systohc(void);

@@ -6,6 +6,7 @@
 #include "PCF8563.h"
 #include "driver/i2c.h"
 #include "hwrtc.h"
+#include "timegm.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -221,7 +222,7 @@ int PCF_GetDateTime(PCF_DateTime *dateTime) {
 	return 0;
 }
 
-int hctosys(const char* tz){
+int hctosys(){
 	int ret;
 	PCF_DateTime date = {0};
 	struct tm tm = {0};
@@ -242,14 +243,10 @@ int hctosys(const char* tz){
 	tm.tm_mon = date.month - 1;
 	tm.tm_year = date.year - 1900;
 
-    setenv("TZ", "UTC", 1);
-    tzset();
-	tv.tv_sec = mktime(&tm);
+	tv.tv_sec = timegm(&tm);
 	tv.tv_usec = 0;
 	ret = settimeofday(&tv, NULL);
 fail:
-    setenv("TZ", tz, 1);
-    tzset();
 	return ret;
 }
 

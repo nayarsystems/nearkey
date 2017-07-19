@@ -1250,6 +1250,8 @@ static esp_err_t load_flash_config() {
     }
     ESP_LOGI(LOG_TAG, "Config loaded")
     ESP_LOGI(LOG_TAG, "Timezone:%s", config.tz);
+    setenv("TZ", config.tz, 1);
+    tzset();
     err = ESP_OK;
 exitfn:
     return err;
@@ -1350,7 +1352,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(load_flash_config());
     ESP_ERROR_CHECK(load_access_data());
 #ifdef RTC_DRIVER    
-    if (hctosys(config.tz) != 0) {
+    if (hctosys() != 0) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");
     }
 #endif

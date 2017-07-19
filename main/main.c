@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_deep_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -129,6 +130,10 @@ static uint32_t reset_button_tm;
     }
     *dst = 0;
 }*/
+
+static void reboot(){
+    esp_deep_sleep(1000LL * 10); // 10ms
+}
 
 static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     mbedtls_base64_encode((uint8_t*)dst, dst_sz, &dst_sz, buf, sz);
@@ -1419,7 +1424,7 @@ void app_main(void) {
                 if(erase_on_reset) {
                     reset_flash_config();
                 }
-                esp_restart();
+                reboot();
             }
         }
         // --- End Reset Timer

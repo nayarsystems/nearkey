@@ -729,51 +729,35 @@ static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     int ret = 0;
     struct timeval tv={0};
     cJSON* json_item = NULL;
+    bool conf_save = false;
 
     json_item = cJSON_GetObjectItem(json_cmd, "now");
-    if(json_item == NULL) {
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't [now] entry", conn);
-        ret = 0;
-        goto fail;
-    }
-    if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("CMD", "[%d] Entry [now] isn't number type", conn);
-        ret = 0;
-        goto fail;
-    }
-    tv.tv_sec = (time_t) json_item->valuedouble;
-    settimeofday(&tv, NULL);
+    if(json_item != NULL) {
+        if(!(json_item->type & cJSON_Number)) {
+            ESP_LOGE("CMD", "[%d] Entry [now] isn't number type", conn);
+            ret = 0;
+            goto fail;
+        }
+        tv.tv_sec = (time_t) json_item->valuedouble;
+        settimeofday(&tv, NULL);
 #ifdef RTC_DRIVER
-    systohc();
+        systohc();
 #endif
-    return 0; 
-fail:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-    cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
-    return ret;
-}
-
-static int do_cmd_tg(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddNumberToObject(json_resp, "now", (double) time(NULL));
-    return 0; 
-}
-
-static int do_cmd_tzs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    int ret = 0;
-    cJSON* json_item = NULL;
+    }
 
     json_item = cJSON_GetObjectItem(json_cmd, "tz");
-    if(json_item == NULL) {
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't [tz] entry", conn);
-        ret = 0;
-        goto fail;
+    if(json_item != NULL) {
+        if(!(json_item->type & cJSON_String)) {
+            ESP_LOGE("CMD", "[%d] Entry [tz] isn't string type", conn);
+            ret = 0;
+            goto fail;
+        }
+        strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
+        setenv("TZ", config.tz, 1);
+        tzset();
+        conf_save = true;
     }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "[%d] Entry [tz] isn't string type", conn);
-        ret = 0;
-        goto fail;
-    }
-    strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
+
 
     json_item = cJSON_GetObjectItem(json_cmd, "tzn");
     if(json_item != NULL) {
@@ -783,12 +767,16 @@ static int do_cmd_tzs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
             goto fail;
         }
         strlcpy(config.tzn, json_item->valuestring, sizeof(config.tzn));
+        conf_save = true;
+    }
+    
+    if (conf_save) {
+        save_flash_config();
     }
 
-    setenv("TZ", config.tz, 1);
-    tzset();
-    save_flash_config();
-    cJSON_AddStringToObject(json_resp, "r", "ok");
+    cJSON_AddNumberToObject(json_resp, "now", (double) time(NULL));
+    cJSON_AddStringToObject(json_resp, "tz", config.tz);
+    cJSON_AddStringToObject(json_resp, "tzn", config.tzn);
     return 0; 
 fail:
     cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
@@ -796,11 +784,6 @@ fail:
     return ret;
 }
 
-static int do_cmd_tzg(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddStringToObject(json_resp, "tz", config.tz);
-    cJSON_AddStringToObject(json_resp, "tzn", config.tzn);
-    return 0; 
-}
 
 static int do_cmd(uint16_t conn, const char* cmd) {
     int ret = 0;
@@ -932,30 +915,11 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
 
-    // [ts] command (TIME SET)
+    // [ts] command (TIME SET/GET)
     if (strcmp(cmd_str, "ts") == 0){
         ret = do_cmd_ts(conn, json_cmd, json_resp);
         goto exitfn;
     }
-
-    // [tg] command (TIME GET)
-    if (strcmp(cmd_str, "tg") == 0){
-        ret = do_cmd_tg(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
-    // [tzs] command (TIME ZONE SET)
-    if (strcmp(cmd_str, "tzs") == 0){
-        ret = do_cmd_tzs(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
-    // [tzg] command (TIME ZONE GET)
-    if (strcmp(cmd_str, "tzg") == 0){
-        ret = do_cmd_tzg(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);

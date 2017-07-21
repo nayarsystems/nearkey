@@ -60,7 +60,7 @@ static void clear_session(uint16_t conn);
 // --- End Function definitions
 
 // Config stuff
-#define CFG_VERSION 4
+#define CFG_VERSION 5
 #define MAX_ACCESS_ENTRIES 1024
 
 static struct config_s {
@@ -68,6 +68,7 @@ static struct config_s {
     uint8_t master_key[32];
     uint8_t vk_id[6];
     char tz[64];
+    char tzn[64];
 } __attribute__((packed)) config;
 
 static bool access_chg;
@@ -366,6 +367,19 @@ static int do_init_config(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
     strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
+
+    // Get TZN string
+    json_item = cJSON_GetObjectItem(json_obj, "tzn");
+    if(json_item != NULL) {
+        if(!(json_item->type & cJSON_String)) {
+            ESP_LOGE("CONFIG", "[%d] JSON entry [tzn] isn't string type", conn);
+            ret = 1;
+            goto exitfn;
+        }
+        strlcpy(config.tzn, json_item->valuestring, sizeof(config.tzn));
+    } else {
+        strcpy(config.tzn, "Etc/UTC");
+    }
 
     save_flash_config();
 
@@ -716,14 +730,14 @@ static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     struct timeval tv={0};
     cJSON* json_item = NULL;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "d");
+    json_item = cJSON_GetObjectItem(json_cmd, "now");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't [d] entry", conn);
+        ESP_LOGE("CMD", "[%d] Cmd object hasn't [now] entry", conn);
         ret = 0;
         goto fail;
     }
     if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("CMD", "[%d] Entry [d] isn't number type", conn);
+        ESP_LOGE("CMD", "[%d] Entry [now] isn't number type", conn);
         ret = 0;
         goto fail;
     }
@@ -740,7 +754,7 @@ fail:
 }
 
 static int do_cmd_tg(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddNumberToObject(json_resp, "r", (double) time(NULL));
+    cJSON_AddNumberToObject(json_resp, "now", (double) time(NULL));
     return 0; 
 }
 
@@ -748,18 +762,29 @@ static int do_cmd_tzs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     int ret = 0;
     cJSON* json_item = NULL;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "d");
+    json_item = cJSON_GetObjectItem(json_cmd, "tz");
     if(json_item == NULL) {
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't [d] entry", conn);
+        ESP_LOGE("CMD", "[%d] Cmd object hasn't [tz] entry", conn);
         ret = 0;
         goto fail;
     }
     if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "[%d] Entry [d] isn't string type", conn);
+        ESP_LOGE("CMD", "[%d] Entry [tz] isn't string type", conn);
         ret = 0;
         goto fail;
     }
     strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
+
+    json_item = cJSON_GetObjectItem(json_cmd, "tzn");
+    if(json_item != NULL) {
+        if(!(json_item->type & cJSON_String)) {
+            ESP_LOGE("CMD", "[%d] Entry [tzn] isn't string type", conn);
+            ret = 0;
+            goto fail;
+        }
+        strlcpy(config.tzn, json_item->valuestring, sizeof(config.tzn));
+    }
+
     setenv("TZ", config.tz, 1);
     tzset();
     save_flash_config();
@@ -772,7 +797,8 @@ fail:
 }
 
 static int do_cmd_tzg(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddStringToObject(json_resp, "r", config.tz);
+    cJSON_AddStringToObject(json_resp, "tz", config.tz);
+    cJSON_AddStringToObject(json_resp, "tzn", config.tzn);
     return 0; 
 }
 
@@ -1193,7 +1219,8 @@ static esp_err_t reset_flash_config() {
     // Reset main config
     memset(&config, 0, sizeof(config));
     config.cfg_version = CFG_VERSION;
-    strcpy(config.tz, "UTC");
+    strcpy(config.tz, "UTC0");
+    strcpy(config.tzn, "Etc/UTC");
     err = save_flash_config();
     if(err != ESP_OK){
         goto fail;

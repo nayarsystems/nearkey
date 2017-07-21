@@ -1,7 +1,6 @@
 .vscode/
 build/
 dumps/
-sdkconfig.defaults
 sdkconfig.old
 virkey.project
 main/custom_board.h

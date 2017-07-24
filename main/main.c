@@ -84,6 +84,7 @@ static nvs_handle nvs_config_h;
 SemaphoreHandle_t session_sem;
 
 typedef struct session_s {
+    time_t creation_ts;
     uint16_t gatts_if;
     uint32_t key_version;
     uint32_t key_id;
@@ -971,6 +972,7 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
     session[conn].conn_timeout = DEF_CONN_TIMEOUT;
     session[conn].connected = true;
     session[conn].nonce = esp_random();
+    session[conn].creation_ts = time(NULL);
     ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
              session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
     gatts_start_adv();

@@ -133,6 +133,13 @@ static uint32_t reset_button_tm;
     *dst = 0;
 }*/
 
+static char *nctime_r(const time_t *timep, char *buf){
+    char *ret = ctime_r(timep, buf);
+    size_t l = strlen(buf);
+    if (l > 0) buf[l-1] = 0; // Remove nasty LF 
+    return ret;
+}
+
 static void reboot(){
     esp_deep_sleep(1000LL * 10); // 10ms
 }
@@ -442,8 +449,6 @@ static int do_login(uint16_t conn, const char* cmd) {
     sign_data = pl->s;
     pl = pl->next;
     nonce_data = pl->s;
-
-    ESP_LOGI("LOGIN", "[%d] Command: %s", conn, json_data);
 
     // Check login signature
     mbedtls_sha256_init(&sha256_ctx);
@@ -995,8 +1000,10 @@ static int disconnect_cb(uint16_t conn) {
 
 static int cmd_cb(uint16_t conn) {
     int ret = 0;
+    char ch_buff[64];
 
-    ESP_LOGI(LOG_TAG, "[%d] Command: %s", conn, session[conn].rx_buffer);
+    time_t now = time(NULL);
+    ESP_LOGI(LOG_TAG, "[%d] Command: %s [%s]", conn, session[conn].rx_buffer, nctime_r(&now, ch_buff));
     if(!session[conn].login) {
         if(!is_configured()) {
             ret = do_init_config(conn, session[conn].rx_buffer);
@@ -1350,7 +1357,7 @@ void app_main(void) {
     }
 #endif
     time_t now = time(NULL);
-    ESP_LOGI(LOG_TAG, "Current time: %s", ctime(&now));
+    ESP_LOGI(LOG_TAG, "Current time: %s", nctime_r(&now, chbuf));
 
 
     bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));

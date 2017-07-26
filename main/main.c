@@ -105,6 +105,16 @@ typedef struct session_s {
 static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // --- End Session stuff
 
+// Time restrictions
+typedef struct time_res_s {
+    uint8_t dow;
+    uint32_t dom;
+    uint16_t mon;
+    uint8_t n_ran;
+    uint32_t ran[10];
+} __attribute__((packed)) time_res_t;
+// --- End Time restrictions 
+
 // Actuator timers
 static int32_t act_timers[MAX_ACTUATORS];
 // --- End Actuator timers

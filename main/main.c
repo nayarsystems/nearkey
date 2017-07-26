@@ -47,6 +47,8 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_UNKNOWN_COMMAND_S "Unknown command"
 #define ERR_INVALID_PARAMS 4
 #define ERR_INVALID_PARAMS_S "Invalid params"
+#define ERR_KEY_EXPIRED 5
+#define ERR_KEY_EXPIRED_S "Key expired"
 
 // --- End Errors
 
@@ -262,6 +264,48 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
 exitfn:
     return ret;
 }
+
+static int chk_expiration(uint16_t conn) {
+    int ret = 0;
+
+    cJSON* cmd_list = NULL;
+    cJSON* cmd_entry = NULL;
+
+    cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "x");
+    if(cmd_list == NULL) {
+        ESP_LOGW("CMD", "[%d] There isn't expiration field, accept by default", conn);
+        ret = 0;
+        goto exitfn;
+    }
+    if(!(cmd_list->type & cJSON_Array)) {
+        ESP_LOGE("CMD", "[%d] Expiration field is not array type", conn);
+        ret = 2;
+        goto exitfn;
+    }
+    if(cJSON_GetArraySize(cmd_list) != 2) {
+        ESP_LOGE("CMD", "[%d] Expiration array size missmatch", conn);
+        ret = 2;
+        goto exitfn;
+    }
+
+    time_t now = time(NULL);
+    cmd_entry = cJSON_GetArrayItem(cmd_list, 0);
+    if (now < cmd_entry->valuedouble) {
+        ESP_LOGE("CMD", "[%d] Time before valid renge.", conn);
+        ret = -1;
+        goto exitfn;
+    }
+    cmd_entry = cJSON_GetArrayItem(cmd_list, 1);
+    if (now > cmd_entry->valuedouble) {
+        ESP_LOGE("CMD", "[%d] Time after valid renge.", conn);
+        ret = 1;
+        goto exitfn;
+    }
+
+exitfn:
+    return ret;
+}
+
 
 static int do_init_config(uint16_t conn, const char* cmd) {
     int ret = 0;
@@ -522,22 +566,22 @@ static int do_login(uint16_t conn, const char* cmd) {
     olen = sizeof(vk_id);
     if(mbedtls_base64_decode(vk_id, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
        0) {
-        ESP_LOGE("LOGIN", "[%d] Error decoding MAC address", conn);
+        ESP_LOGE("LOGIN", "[%d] Error decoding virkey id", conn);
         ret = 1;
         goto exitfn;
     }
     if(olen != 6) {
-        ESP_LOGE("CMD", "[%d] MAC address size isn't 6 bytes long", conn);
+        ESP_LOGE("CMD", "[%d] virkey id size isn't 6 bytes long", conn);
         ret = 1;
         goto exitfn;
     }
     if(memcmp(vk_id, config.vk_id, sizeof(config.vk_id)) != 0) {
-        ESP_LOGE("CMD", "[%d] virkey ID don't match", conn);
+        ESP_LOGE("CMD", "[%d] virkey id don't match", conn);
         ret = 1;
         goto exitfn;
     }
 
-    // Check login timestamp
+    // Check key version
     json_item = cJSON_GetObjectItem(session[conn].login_obj, "v");
     if(json_item == NULL) {
         ESP_LOGE("LOGIN", "[%d] Login object hasn't [v] entry", conn);
@@ -580,6 +624,13 @@ static int do_login(uint16_t conn, const char* cmd) {
     if (set_access_data(session[conn].key_id, session[conn].key_version) < 0){
         cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
         cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
+        ret = 1;
+        goto exitfn;
+    }
+
+    if (chk_expiration(conn) != 0 ){
+        cJSON_AddNumberToObject(json_resp, "e", ERR_KEY_EXPIRED);
+        cJSON_AddStringToObject(json_resp, "d", ERR_KEY_EXPIRED_S);
         ret = 1;
         goto exitfn;
     }

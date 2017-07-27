@@ -275,6 +275,50 @@ exitfn:
     return ret;
 }
 
+static int chk_time_res_str(const char *str){
+    time_res_t tr = {0};
+    size_t olen = 0;
+    int ret = 0;
+
+    if(mbedtls_base64_decode((uint8_t*)&tr, sizeof(tr), &olen, (uint8_t*)str, strlen(str)) != 0) {
+        ret = -1;
+        goto exitfn;
+    }
+    time_t now = time(NULL);
+    struct tm ltm;
+    if (localtime_r(&now, &ltm) == NULL){
+        ret = -1;
+        goto exitfn;
+    }
+    // Check day of week
+    if (!(tr.dow & ((uint8_t)1 << ltm.tm_wday))){
+        ret = 1;
+        goto exitfn;
+    }
+    // Check day of month
+    if (!(tr.dom & ((uint32_t)1 << (ltm.tm_mday - 1)))){
+        ret = 1;
+        goto exitfn;
+    }
+    // Check month
+    if (!(tr.mon & ((uint16_t)1 << ltm.tm_mon))){
+        ret = 1;
+        goto exitfn;
+    }
+    // Check minute ranges of day 
+    int min = ltm.tm_hour * 60 + ltm.tm_min;
+    for(int n = 0; n < tr.n_ran; n++){
+        if(min >= (tr.ran[n] & 0xffff) && min <= (tr.ran[n] >> 16)){
+            ret = 0;
+            goto exitfn;
+        }
+        ret = 1;
+    }
+ 
+exitfn:
+    return ret;
+}
+
 static int chk_expiration(uint16_t conn) {
     int ret = 0;
 

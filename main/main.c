@@ -49,7 +49,8 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_INVALID_PARAMS_S "Invalid params"
 #define ERR_KEY_EXPIRED 5
 #define ERR_KEY_EXPIRED_S "Key expired"
-
+#define ERR_TIME_RESTRICTION 6
+#define ERR_TIME_RESTRICTION_S "Time restriction"
 // --- End Errors
 
 // Function declarations
@@ -319,6 +320,46 @@ exitfn:
     return ret;
 }
 
+static int chk_time_res(uint16_t conn) {
+    int ret = 0;
+
+    cJSON* list = NULL;
+    cJSON* entry = NULL;
+
+    list = cJSON_GetObjectItem(session[conn].login_obj, "y");
+    if(list == NULL) {
+        ESP_LOGW("CMD", "[%d] There isn't time restrictions field, allow by default", conn);
+        ret = 0;
+        goto exitfn;
+    }
+    if(!(list->type & cJSON_Array)) {
+        ESP_LOGE("CMD", "[%d] Time restrictions field is not array type", conn);
+        ret = 2;
+        goto exitfn;
+    }    
+    int sz = cJSON_GetArraySize(list);
+    for(int idx = 0; idx < sz; idx++) {
+        entry = cJSON_GetArrayItem(list, idx);
+        if(entry == NULL) {
+            ESP_LOGE("CMD", "[%d] Unexpexted end of time restrictions array", conn);
+            ret = 2;
+            goto exitfn;
+        }
+        if(entry->type != cJSON_String) {
+            ESP_LOGE("CMD", "[%d] Time restrictions item is not string type", conn);
+            ret = 2;
+            goto exitfn;
+        }
+        if(chk_time_res_str(entry->valuestring) == 0) {
+            ret = 0;
+            goto exitfn;
+        }
+    }
+    ret = 1;
+exitfn:
+    return ret;
+}
+
 static int chk_expiration(uint16_t conn) {
     int ret = 0;
 
@@ -327,7 +368,7 @@ static int chk_expiration(uint16_t conn) {
 
     cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "x");
     if(cmd_list == NULL) {
-        ESP_LOGW("CMD", "[%d] There isn't expiration field, accept by default", conn);
+        ESP_LOGW("CMD", "[%d] There isn't expiration field, allow by default", conn);
         ret = 0;
         goto exitfn;
     }
@@ -685,6 +726,13 @@ static int do_login(uint16_t conn, const char* cmd) {
     if (chk_expiration(conn) != 0 ){
         cJSON_AddNumberToObject(json_resp, "e", ERR_KEY_EXPIRED);
         cJSON_AddStringToObject(json_resp, "d", ERR_KEY_EXPIRED_S);
+        ret = 1;
+        goto exitfn;
+    }
+
+    if (chk_time_res(conn) != 0 ){
+        cJSON_AddNumberToObject(json_resp, "e", ERR_TIME_RESTRICTION);
+        cJSON_AddStringToObject(json_resp, "d", ERR_TIME_RESTRICTION_S);
         ret = 1;
         goto exitfn;
     }

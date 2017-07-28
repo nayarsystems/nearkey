@@ -29,7 +29,7 @@
 #include "boards.h"
 #include "hwrtc.h"
 
-#define FW_VER "1.1"
+#define FW_VER "1.2"
 #define LOG_TAG "MAIN"
 
 // Boards config
@@ -320,20 +320,22 @@ exitfn:
     return ret;
 }
 
-static int chk_time_res(uint16_t conn) {
+static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
     int ret = 0;
-
     cJSON* list = NULL;
     cJSON* entry = NULL;
 
-    list = cJSON_GetObjectItem(session[conn].login_obj, "y");
+    list = cJSON_GetObjectItem(session[conn].login_obj, field);
     if(list == NULL) {
-        ESP_LOGW("CMD", "[%d] There isn't time restrictions field, allow by default", conn);
-        ret = 0;
+        if (nreq) {
+            ret = 0;
+        } else {
+            ret = 1;
+        }
         goto exitfn;
     }
     if(!(list->type & cJSON_Array)) {
-        ESP_LOGE("CMD", "[%d] Time restrictions field is not array type", conn);
+        ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions field is not array type", conn);
         ret = 2;
         goto exitfn;
     }    
@@ -341,12 +343,12 @@ static int chk_time_res(uint16_t conn) {
     for(int idx = 0; idx < sz; idx++) {
         entry = cJSON_GetArrayItem(list, idx);
         if(entry == NULL) {
-            ESP_LOGE("CMD", "[%d] Unexpexted end of time restrictions array", conn);
+            ESP_LOGE("CHK_TIME_RES", "[%d] Unexpexted end of time restrictions array", conn);
             ret = 2;
             goto exitfn;
         }
         if(entry->type != cJSON_String) {
-            ESP_LOGE("CMD", "[%d] Time restrictions item is not string type", conn);
+            ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions item is not string type", conn);
             ret = 2;
             goto exitfn;
         }
@@ -368,17 +370,16 @@ static int chk_expiration(uint16_t conn) {
 
     cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "x");
     if(cmd_list == NULL) {
-        ESP_LOGW("CMD", "[%d] There isn't expiration field, allow by default", conn);
         ret = 0;
         goto exitfn;
     }
     if(!(cmd_list->type & cJSON_Array)) {
-        ESP_LOGE("CMD", "[%d] Expiration field is not array type", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration field is not array type", conn);
         ret = 2;
         goto exitfn;
     }
     if(cJSON_GetArraySize(cmd_list) != 2) {
-        ESP_LOGE("CMD", "[%d] Expiration array size missmatch", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration array size missmatch", conn);
         ret = 2;
         goto exitfn;
     }
@@ -386,13 +387,13 @@ static int chk_expiration(uint16_t conn) {
     time_t now = time(NULL);
     cmd_entry = cJSON_GetArrayItem(cmd_list, 0);
     if (now < cmd_entry->valuedouble) {
-        ESP_LOGE("CMD", "[%d] Time before valid renge.", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid renge.", conn);
         ret = -1;
         goto exitfn;
     }
     cmd_entry = cJSON_GetArrayItem(cmd_list, 1);
     if (now > cmd_entry->valuedouble) {
-        ESP_LOGE("CMD", "[%d] Time after valid renge.", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time after valid renge.", conn);
         ret = 1;
         goto exitfn;
     }
@@ -730,10 +731,19 @@ static int do_login(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
 
-    if (chk_time_res(conn) != 0 ){
+    if (chk_time_res(conn, "y", true) != 0 ){
         cJSON_AddNumberToObject(json_resp, "e", ERR_TIME_RESTRICTION);
         cJSON_AddStringToObject(json_resp, "d", ERR_TIME_RESTRICTION_S);
         ret = 1;
+        ESP_LOGI("LOGIN", "[%d] Don't pass time restriction allow rules", conn);
+        goto exitfn;
+    }
+
+    if (chk_time_res(conn, "z", false) == 0 ){
+        cJSON_AddNumberToObject(json_resp, "e", ERR_TIME_RESTRICTION);
+        cJSON_AddStringToObject(json_resp, "d", ERR_TIME_RESTRICTION_S);
+        ret = 1;
+        ESP_LOGI("LOGIN", "[%d] Don't pass time restriction deny rules", conn);
         goto exitfn;
     }
 

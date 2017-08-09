@@ -162,7 +162,7 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(uint16_t conn, cJSON* resp, bool add_nounce, bool add_signature) {
+static int respond(uint16_t conn, cJSON* resp, bool add_nonce, bool add_signature) {
     int res = 0;
     char* json_str = NULL;
     char* sign_str = NULL;
@@ -173,7 +173,7 @@ static int respond(uint16_t conn, cJSON* resp, bool add_nounce, bool add_signatu
     size_t olen = 0;
 
     // Append n and x nonce fields
-    if(add_nounce) {
+    if(add_nonce) {
         snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].nonce);
         cJSON_AddStringToObject(resp, "n", nonce_str);
     }
@@ -259,7 +259,7 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
     for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
         cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
         if(cmd_entry == NULL) {
-            ESP_LOGE("CMD", "[%d] Unexpexted end of command array", conn);
+            ESP_LOGE("CMD", "[%d] Unexpected end of command array", conn);
             ret = 1;
             goto exitfn;
         }
@@ -343,7 +343,7 @@ static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
     for(int idx = 0; idx < sz; idx++) {
         entry = cJSON_GetArrayItem(list, idx);
         if(entry == NULL) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Unexpexted end of time restrictions array", conn);
+            ESP_LOGE("CHK_TIME_RES", "[%d] Unexpected end of time restrictions array", conn);
             ret = 2;
             goto exitfn;
         }
@@ -387,13 +387,13 @@ static int chk_expiration(uint16_t conn) {
     time_t now = time(NULL);
     cmd_entry = cJSON_GetArrayItem(cmd_list, 0);
     if (now < cmd_entry->valuedouble) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid renge.", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid range.", conn);
         ret = -1;
         goto exitfn;
     }
     cmd_entry = cJSON_GetArrayItem(cmd_list, 1);
     if (now > cmd_entry->valuedouble) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Time after valid renge.", conn);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time after valid range.", conn);
         ret = 1;
         goto exitfn;
     }
@@ -803,7 +803,7 @@ static int do_cmd_key_upgrade(uint16_t conn, const char* cmd, cJSON* json_resp){
     for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
         cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
         if(cmd_entry == NULL) {
-            ESP_LOGE("CMD_UPGRADE", "[%d] Unexpexted end of command array", conn);
+            ESP_LOGE("CMD_UPGRADE", "[%d] Unexpected end of command array", conn);
             ret = 1;
             goto exitfn;
         }
@@ -1338,7 +1338,7 @@ static esp_err_t save_flash_config() {
     err = nvs_commit(nvs_config_h);
     if(err != ESP_OK)
         goto exitfn;
-    ESP_LOGI(LOG_TAG, "Config writen to flash!");
+    ESP_LOGI(LOG_TAG, "Config written to flash!");
     err = ESP_OK;
 exitfn:
     if(err != ESP_OK) {

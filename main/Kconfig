@@ -3,7 +3,7 @@ menu "Virkey.com config"
 choice
     prompt "Board"
     help
-        Selects Virkey targer board.
+        Selects Virkey target board.
     config VK_BOARD_CUSTOM
         bool "Custom board"
         help

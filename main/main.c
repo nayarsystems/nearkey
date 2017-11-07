@@ -153,6 +153,10 @@ static char *nctime_r(const time_t *timep, char *buf){
     return ret;
 }
 
+static bool chk_time() {
+    return time(NULL) > 1483225200; // check if date is greater than 2017/01/01 00:00:00
+}
+
 static void reboot(){
     esp_deep_sleep(1000LL * 10); // 10ms
 }
@@ -660,8 +664,7 @@ static int do_login(uint16_t conn, const char* cmd) {
 
     // Check virkey ID
     olen = sizeof(vk_id);
-    if(mbedtls_base64_decode(vk_id, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) !=
-       0) {
+    if(mbedtls_base64_decode(vk_id, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
         ESP_LOGE("LOGIN", "[%d] Error decoding virkey id", conn);
         ret = 1;
         goto exitfn;
@@ -722,6 +725,17 @@ static int do_login(uint16_t conn, const char* cmd) {
         cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
         ret = 1;
         goto exitfn;
+    }
+
+    // Check if clock has a valid time
+    if (!chk_time()){
+        cJSON_DeleteItemFromObject(session[conn].login_obj, "x");
+        cJSON_DeleteItemFromObject(session[conn].login_obj, "y");
+        cJSON_DeleteItemFromObject(session[conn].login_obj, "z");
+        cJSON_DeleteItemFromObject(session[conn].login_obj, "a");
+        json_item = cJSON_CreateArray();
+        cJSON_AddItemToArray(json_item, cJSON_CreateString("ts"));
+        cJSON_AddItemToObject(session[conn].login_obj, "a", json_item);
     }
 
     if (chk_expiration(conn) != 0 ){

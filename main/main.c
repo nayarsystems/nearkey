@@ -111,9 +111,10 @@ static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // OTA stuff
 typedef struct ota_s {
     bool lock;
-    uint32_t current_update;
+    bool start;
+    uint32_t running_update;
     uint32_t started_update;
-    uint8_t sha512sum[32];
+    char *sha512sum;
     mbedtls_sha256_context sha256_ctx;
     esp_ota_handle_t handle;
     size_t size;

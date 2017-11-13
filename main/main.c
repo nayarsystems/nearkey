@@ -24,6 +24,7 @@
 #include "mbedtls/sha256.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "esp_ota_ops.h"
 #include "parseutils.h"
 #include "utils.h"
 #include "boards.h"
@@ -102,9 +103,20 @@ typedef struct session_s {
     bool connected;
     bool login;
     bool upgrade_on_bye;
+    bool ota_lock;
 } session_t ;
 static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 // --- End Session stuff
+
+// OTA stuff
+typedef struct ota_s {
+    bool lock
+
+    uint8_t sha256sum[32]
+    uint8_t signature[32]
+    uint32_t offset
+}
+// --- End OTA stuff
 
 // Time restrictions
 typedef struct time_res_s {

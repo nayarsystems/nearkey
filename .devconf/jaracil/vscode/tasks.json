@@ -1,0 +1,46 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "0.1.0",
+    "command": "make",
+    "isShellCommand": true,
+    "args": [],
+    "showOutput": "always",
+    "echoCommand": true,
+    "options": {
+		"cwd": "${workspaceRoot}",
+   		"env": {
+			"IDF_PATH": "/home/pepe/esp32/esp-idf",
+			"PATH": "${env:PATH}:/home/pepe/esp32/xtensa-esp32-elf/bin"
+		}
+	},    
+    "tasks": [
+        {
+            "taskName": "Flash",
+            "suppressTaskName": true,
+            "args": [
+                "flash"
+            ]
+        },
+        {
+            "isBuildCommand": true,
+            "taskName": "Build",
+            "suppressTaskName": true,
+            "args": [
+                "-j4"
+            ],
+            "problemMatcher": {
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"severity": 4,
+					"message": 5
+				}
+			}
+        }
+    ]
+
+}

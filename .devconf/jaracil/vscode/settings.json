@@ -1,0 +1,31 @@
+// Place your settings in this file to overwrite default and user settings.
+{
+    "C_Cpp.intelliSenseEngine": "Default",
+    "C_Cpp.autocomplete": "Default",
+    "files.associations": {
+        "i2c.h": "c",
+        "pcf8563.h": "c",
+        "esp_err.h": "c",
+        "xos_types.h": "c",
+        "stdbool.h": "c",
+        "time.h": "c",
+        "esp_log.h": "c",
+        "xos_thread.h": "c",
+        "x509_crl.h": "c",
+        "search.h": "c",
+        "binary_heap_.hpp": "c",
+        "entry_cmp.hpp": "c",
+        "entry_pred.hpp": "c",
+        "cc_ht_map_.hpp": "c",
+        "cond_key_dtor_entry_dealtor.hpp": "c",
+        "gp_ht_map_.hpp": "c",
+        "lu_map_.hpp": "c",
+        "rc.hpp": "c",
+        "gpio_struct.h": "c",
+        "timer_group_struct.h": "c",
+        "esp_bt_defs.h": "c",
+        "sha256.h": "c",
+        "locale_facets.h": "c",
+        "ctype_inline.h": "c"
+    }
+}

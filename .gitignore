@@ -1,7 +1,7 @@
-.vscode/
 build/
 dumps/
 sdkconfig.old
 virkey.project
 main/custom_board.h
 *~
+.vscode

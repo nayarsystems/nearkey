@@ -115,7 +115,7 @@ typedef struct ota_s {
     bool start;
     uint32_t running_update;
     uint32_t started_update;
-    char *sha512sum;
+    char sha512sum[64];
     mbedtls_sha256_context sha256_ctx;
     esp_ota_handle_t handle;
     size_t size;
@@ -1012,7 +1012,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         cJSON_AddNumberToObject(json_resp,"size", ota.size);
         cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
         ret = 0;
-        goto exitok;
+        goto exitfn;
     }
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);

@@ -52,6 +52,9 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_KEY_EXPIRED_S "Key expired"
 #define ERR_TIME_RESTRICTION 6
 #define ERR_TIME_RESTRICTION_S "Time restriction"
+#define ERR_FLASH_LOCKED 7
+#define ERR_FLASH_LOCKED_S "Flash Locked"
+
 // --- End Errors
 
 // Function declarations
@@ -988,6 +991,19 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
 
+    // [fl] flash get lock
+    if (strcmp(cmd_str, "fl") == 0){
+        if (ota.lock) {
+            cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_LOCKED);
+            cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_LOCKED_S);
+            ret = 0;
+            goto exitfn;
+        }
+        ota.lock = true;
+        session[conn].ota_lock = true;
+        goto exitok;
+    }
+
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
     ret = 0;
@@ -1013,6 +1029,9 @@ exitfn:
 }
 
 static void clear_session(uint16_t conn){
+    if (session[conn].ota_lock){
+        ota.lock = false;
+    }
     SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
     memset(&session[conn], 0, sizeof(session_t));
     save_access_data();

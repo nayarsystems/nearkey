@@ -1004,6 +1004,19 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitok;
     }
 
+    // [fs] flash get state
+    if (strcmp(cmd_str, "fs") == 0){
+        cJSON_AddBoolToObject(json_resp, "lock", ota.lock);
+        cJSON_AddBoolToObject(json_resp, "start", ota.start);
+        cJSON_AddStringToObject(json_resp,"hash", ota.sha512sum);
+        cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
+        cJSON_AddNumberToObject(json_resp,"run_update", ota.running_update);
+        cJSON_AddNumberToObject(json_resp,"size", ota.size);
+        cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
+        ret = 0;
+        goto exitok;
+    }
+
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
     ret = 0;

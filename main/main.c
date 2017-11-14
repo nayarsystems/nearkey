@@ -61,7 +61,6 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static esp_err_t save_access_data();
-static uint32_t get_access_data(uint32_t idx);
 static int set_access_data(uint32_t idx, uint32_t ts);
 static void clear_session(uint16_t conn);
 // --- End Function definitions
@@ -105,7 +104,6 @@ typedef struct session_s {
     int conn_timeout;
     bool connected;
     bool login;
-    bool upgrade_on_bye;
     bool ota_lock;
 } session_t ;
 static session_t session[CONFIG_BT_ACL_CONNECTIONS];
@@ -946,11 +944,11 @@ static int do_cmd(uint16_t conn, const char* cmd) {
 
     // [q] command (QUIT)
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        if (session[conn].upgrade_on_bye) {
-            session[conn].upgrade_on_bye = false;
-            set_access_data(session[conn].key_id, get_access_data(session[conn].key_id) + 1);
-        }
         session[conn].login = false;
+        if (session[conn].ota_lock) {
+            session[conn].ota_lock = false;
+            ota.lock = false;
+        }
         ret = 0;
         goto exitok;
     }
@@ -1234,13 +1232,6 @@ static esp_err_t save_access_data() {
 
 fail:
     return err;
-}
-
-
-static uint32_t get_access_data(uint32_t idx){
-    
-    assert(idx < MAX_ACCESS_ENTRIES);
-    return access[idx];
 }
 
 static int set_access_data(uint32_t idx, uint32_t ts){

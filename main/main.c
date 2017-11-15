@@ -40,20 +40,30 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 // --- End Boards config
 
 // Errors
-#define ERR_OLD_KEY_VERSION 1
+#define ERR_INTERNAL 1
+#define ERR_INTERNAL_S "Internal error"
+#define ERR_OLD_KEY_VERSION 2
 #define ERR_OLD_KEY_VERSION_S "Old Key version"
-#define ERR_PERMISSION_DENIED 2
+#define ERR_PERMISSION_DENIED 3
 #define ERR_PERMISSION_DENIED_S "Permission denied"
-#define ERR_UNKNOWN_COMMAND 3
+#define ERR_UNKNOWN_COMMAND 4
 #define ERR_UNKNOWN_COMMAND_S "Unknown command"
-#define ERR_INVALID_PARAMS 4
+#define ERR_INVALID_PARAMS 5
 #define ERR_INVALID_PARAMS_S "Invalid params"
-#define ERR_KEY_EXPIRED 5
+#define ERR_KEY_EXPIRED 6
 #define ERR_KEY_EXPIRED_S "Key expired"
-#define ERR_TIME_RESTRICTION 6
+#define ERR_TIME_RESTRICTION 7
 #define ERR_TIME_RESTRICTION_S "Time restriction"
-#define ERR_FLASH_LOCKED 7
+#define ERR_FLASH_LOCKED 8
 #define ERR_FLASH_LOCKED_S "Flash Locked"
+#define ERR_FLASH_NOTOWNED 9
+#define ERR_FLASH_NOTOWNED_S "Flash not owned"
+#define ERR_FLASH_OTAINIT 10
+#define ERR_FLASH_OTAINIT_S "OTA not initialized "
+#define ERR_FLASH_OUTDATED 11
+#define ERR_FLASH_OUTDATED_S "Outdated firmware"
+#define ERR_FLASH_PARTERROR 12
+#define ERR_FLASH_PARTERROR_S "Partition error"
 
 // --- End Errors
 
@@ -115,9 +125,10 @@ typedef struct ota_s {
     bool start;
     uint32_t running_update;
     uint32_t started_update;
-    char sha512sum[64];
+    char sha256sum[64];
     mbedtls_sha256_context sha256_ctx;
     esp_ota_handle_t handle;
+    const esp_partition_t *part;
     size_t size;
     size_t offset;
 } ota_t;
@@ -858,6 +869,165 @@ fail:
     return ret;
 }
 
+static int do_cmd_fl(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+    if (ota.lock) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_LOCKED);
+        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_LOCKED_S);
+        return 0;
+    }
+    ota.lock = true;
+    session[conn].ota_lock = true;
+    cJSON_AddStringToObject(json_resp, "r", "ok");
+    return 0;
+}
+
+static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+    cJSON_AddBoolToObject(json_resp, "lock", ota.lock);
+    cJSON_AddBoolToObject(json_resp, "start", ota.start);
+    cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
+    cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
+    cJSON_AddNumberToObject(json_resp,"run_update", ota.running_update);
+    cJSON_AddNumberToObject(json_resp,"size", ota.size);
+    cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
+    return 0;
+}
+
+static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+    cJSON* json_item = NULL;
+
+    if (!session[conn].ota_lock){
+        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_NOTOWNED);
+        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_NOTOWNED_S);
+        return 0;
+    }
+    json_item = cJSON_GetObjectItem(json_cmd, "update");
+    if(json_item == NULL || !(json_item->type & cJSON_Number)) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
+        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        return 1;
+    }
+    if (json_item->valueint <= ota.running_update || json_item->valueint < ota.running_update) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_OUTDATED);
+        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_OUTDATED_S);
+        return 0;
+    }
+    uint32_t update = json_item->valueint;
+
+    json_item = cJSON_GetObjectItem(json_cmd, "hash");
+    if(json_item == NULL || !(json_item->type & cJSON_String)) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
+        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        return 1;
+    }
+    char *hash = json_item->valuestring;
+
+    json_item = cJSON_GetObjectItem(json_cmd, "size");
+    if(json_item == NULL || !(json_item->type & cJSON_Number)) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
+        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        return 1;
+    }
+    size_t size = json_item->valueint;
+
+    // Check Here signature hash+update+size
+
+    // Prepare OTA 
+    if (ota.start) { // Free resources for already started OTA
+        mbedtls_sha256_free(&ota.sha256_ctx);
+        esp_ota_end(ota.handle);
+        ota.start = false;
+    }
+    strncpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
+    ota.offset = 0;
+    ota.started_update = update;
+    ota.size = size;
+    ota.part = esp_ota_get_next_update_partition(NULL);
+    if (ota.part == NULL) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
+        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
+        return 0;
+    }
+    if (esp_ota_begin(ota.part, ota.size, &ota.handle) != ESP_OK) {
+        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
+        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
+        return 0;
+    }
+    mbedtls_sha256_init(&ota.sha256_ctx);
+    mbedtls_sha256_starts(&ota.sha256_ctx, 0);
+    ota.start = true;
+    return do_cmd_fs(conn, json_cmd, json_resp);
+}
+
+static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+    cJSON* json_item = NULL;
+    size_t olen = 0;
+    int ret = 0;
+    uint8_t *buffer = NULL;
+
+    if (!session[conn].ota_lock){
+        ret = 0;
+        goto exitfn_not_owned;
+    }
+
+    if (!ota.start) {
+        ret = 0;
+        goto exitfn_ota_init;
+    }
+
+    json_item = cJSON_GetObjectItem(json_cmd, "data");
+    if(json_item == NULL || !(json_item->type & cJSON_String)) {
+        ret = 1;
+        goto exitfn_invalid_params;
+    }
+    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
+        ret = 1;
+        goto exitfn_invalid_params;
+    }
+    buffer = malloc(olen);
+    if (buffer == NULL) {
+        ret = 1;
+        goto exitfn_internal_error;
+    }
+    if(mbedtls_base64_decode(buffer, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
+        ret = 1;
+        goto exitfn_internal_error;
+    }
+    if (esp_ota_write(ota.handle, buffer, olen) != ESP_OK) {
+        ret = 0;
+        goto exitfn_part_error;
+    }
+    mbedtls_sha256_update(&ota.sha256_ctx, buffer, olen);
+    ota.offset += olen;
+
+    cJSON_AddNumberToObject(json_resp, "offset", ota.offset);
+    
+    goto exitfn;
+exitfn_internal_error:
+    cJSON_AddNumberToObject(json_resp, "e", ERR_INTERNAL);
+    cJSON_AddStringToObject(json_resp, "d", ERR_INTERNAL_S);
+    goto exitfn;
+exitfn_part_error:
+    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
+    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
+    goto exitfn;
+exitfn_ota_init:
+    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_OTAINIT);
+    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_OTAINIT_S);
+    goto exitfn;
+exitfn_not_owned:
+    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_NOTOWNED);
+    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_NOTOWNED_S);
+    goto exitfn;
+exitfn_invalid_params:
+    cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
+    cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+    goto exitfn;
+exitfn:
+    if (buffer != NULL) {
+        free(buffer);
+    }
+    return ret;
+}
 
 static int do_cmd(uint16_t conn, const char* cmd) {
     int ret = 0;
@@ -991,29 +1161,28 @@ static int do_cmd(uint16_t conn, const char* cmd) {
 
     // [fl] flash get lock
     if (strcmp(cmd_str, "fl") == 0){
-        if (ota.lock) {
-            cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_LOCKED);
-            cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_LOCKED_S);
-            ret = 0;
-            goto exitfn;
-        }
-        ota.lock = true;
-        session[conn].ota_lock = true;
-        goto exitok;
+        ret = do_cmd_fl(conn, json_cmd, json_resp);
+        goto exitfn;
     }
 
     // [fs] flash get state
     if (strcmp(cmd_str, "fs") == 0){
-        cJSON_AddBoolToObject(json_resp, "lock", ota.lock);
-        cJSON_AddBoolToObject(json_resp, "start", ota.start);
-        cJSON_AddStringToObject(json_resp,"hash", ota.sha512sum);
-        cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
-        cJSON_AddNumberToObject(json_resp,"run_update", ota.running_update);
-        cJSON_AddNumberToObject(json_resp,"size", ota.size);
-        cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
-        ret = 0;
+        ret = do_cmd_fs(conn, json_cmd, json_resp);
         goto exitfn;
     }
+
+    // [fi] flash init
+    if (strcmp(cmd_str, "fi") == 0){
+        ret = do_cmd_fi(conn, json_cmd, json_resp);
+        goto exitfn;
+    }
+
+    // [fw] flash write
+    if (strcmp(cmd_str, "fw") == 0){
+        ret = do_cmd_fw(conn, json_cmd, json_resp);
+        goto exitfn;
+    }
+
 
     cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
     cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);

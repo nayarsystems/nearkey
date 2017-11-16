@@ -52,6 +52,9 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_FLASH_OTAINIT 10
 #define ERR_FLASH_OUTDATED 11
 #define ERR_FLASH_PARTERROR 12
+#define ERR_FLASH_OVERRUN 13
+#define ERR_FLASH_CHECKSUM 14
+#define ERR_FLASH_BOOT 15
 
 typedef struct _code {
     int code;
@@ -71,6 +74,9 @@ static CODE errors[] = {
     {ERR_FLASH_OTAINIT, "OTA not initialized"},
     {ERR_FLASH_OUTDATED, "Outdated firmware"},
     {ERR_FLASH_PARTERROR, "Partition error"},
+    {ERR_FLASH_OVERRUN, "Flash overrun"},
+    {ERR_FLASH_CHECKSUM, "Flash checksum fail"},
+    {ERR_FLASH_BOOT, "Error setting boot partition"},
     {-1, NULL},
 };
 
@@ -132,6 +138,7 @@ static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 typedef struct ota_s {
     bool lock;
     bool start;
+    bool ota_end;
     uint32_t running_update;
     uint32_t started_update;
     char sha256sum[64];
@@ -911,6 +918,16 @@ static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     return 0;
 }
 
+static void reset_ota() {
+    if (ota.start) { // Free resources for started OTA
+        mbedtls_sha256_free(&ota.sha256_ctx);
+        if (!ota.ota_end){
+            esp_ota_end(ota.handle);
+        }
+    }
+    memset(&ota, 0, sizeof(ota));
+}
+
 static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON* json_item = NULL;
 
@@ -946,11 +963,7 @@ static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     // Check Here signature hash+update+size
 
     // Prepare OTA 
-    if (ota.start) { // Free resources for already started OTA
-        mbedtls_sha256_free(&ota.sha256_ctx);
-        esp_ota_end(ota.handle);
-        ota.start = false;
-    }
+    reset_ota();
     strncpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
     ota.offset = 0;
     ota.started_update = update;
@@ -994,17 +1007,20 @@ static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
         resp_error(json_resp, ERR_INVALID_PARAMS);
         goto exitfn;
     }
-    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
+
+    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
         ret = 1;
         resp_error(json_resp, ERR_INVALID_PARAMS);
         goto exitfn;
     }
+
     buffer = malloc(olen);
     if (buffer == NULL) {
         ret = 1;
         resp_error(json_resp, ERR_INTERNAL);
         goto exitfn;
     }
+
     if(mbedtls_base64_decode(buffer, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
         ret = 1;
         resp_error(json_resp, ERR_INTERNAL);
@@ -1013,10 +1029,48 @@ static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     if (esp_ota_write(ota.handle, buffer, olen) != ESP_OK) {
         ret = 0;
         resp_error(json_resp, ERR_FLASH_PARTERROR);
+        reset_ota();
         goto exitfn;
     }
     mbedtls_sha256_update(&ota.sha256_ctx, buffer, olen);
     ota.offset += olen;
+
+    if (ota.offset > ota.size) {
+        ret = 1;
+        resp_error(json_resp, ERR_FLASH_OVERRUN);
+        reset_ota();
+        goto exitfn;
+    }
+
+    if (ota.offset == ota.size) {
+        uint8_t chk_calc[32] = {0};
+        uint8_t chk_ota[32] = {0};
+        mbedtls_sha256_finish(&ota.sha256_ctx, chk_calc);
+        mbedtls_base64_decode(chk_ota, sizeof(chk_ota), &olen, (uint8_t *)ota.sha256sum, strlen(ota.sha256sum));
+        if(memcmp(chk_calc, chk_ota, sizeof(chk_calc)) == 0) {
+            ota.ota_end = true;
+            esp_err_t err = esp_ota_end(ota.handle);
+            if (err != ESP_OK) {
+                resp_error(json_resp, ERR_FLASH_CHECKSUM);
+                reset_ota();
+                goto exitfn;
+            }    
+            err = esp_ota_set_boot_partition(ota.part);
+            if (err != ESP_OK) {
+                resp_error(json_resp, ERR_FLASH_BOOT);
+                reset_ota();
+                goto exitfn;
+            }
+            reset_ota();
+            reset_tm = 10;
+            
+
+        } else {
+            resp_error(json_resp, ERR_FLASH_CHECKSUM);
+            reset_ota();
+            goto exitfn;
+        }
+    }
 
     cJSON_AddNumberToObject(json_resp, "offset", ota.offset);
     goto exitfn;

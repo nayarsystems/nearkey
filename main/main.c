@@ -41,29 +41,38 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 
 // Errors
 #define ERR_INTERNAL 1
-#define ERR_INTERNAL_S "Internal error"
 #define ERR_OLD_KEY_VERSION 2
-#define ERR_OLD_KEY_VERSION_S "Old Key version"
 #define ERR_PERMISSION_DENIED 3
-#define ERR_PERMISSION_DENIED_S "Permission denied"
 #define ERR_UNKNOWN_COMMAND 4
-#define ERR_UNKNOWN_COMMAND_S "Unknown command"
 #define ERR_INVALID_PARAMS 5
-#define ERR_INVALID_PARAMS_S "Invalid params"
 #define ERR_KEY_EXPIRED 6
-#define ERR_KEY_EXPIRED_S "Key expired"
 #define ERR_TIME_RESTRICTION 7
-#define ERR_TIME_RESTRICTION_S "Time restriction"
 #define ERR_FLASH_LOCKED 8
-#define ERR_FLASH_LOCKED_S "Flash Locked"
 #define ERR_FLASH_NOTOWNED 9
-#define ERR_FLASH_NOTOWNED_S "Flash not owned"
 #define ERR_FLASH_OTAINIT 10
-#define ERR_FLASH_OTAINIT_S "OTA not initialized "
 #define ERR_FLASH_OUTDATED 11
-#define ERR_FLASH_OUTDATED_S "Outdated firmware"
 #define ERR_FLASH_PARTERROR 12
-#define ERR_FLASH_PARTERROR_S "Partition error"
+
+typedef struct _code {
+    int code;
+	char *desc;
+} CODE;
+
+static CODE errors[] = {
+    {ERR_INTERNAL, "Internal error"},
+    {ERR_OLD_KEY_VERSION , "Old Key version"},
+    {ERR_PERMISSION_DENIED, "Permission denied"},
+    {ERR_UNKNOWN_COMMAND, "Unknown command"},
+    {ERR_INVALID_PARAMS, "Invalid params"},
+    {ERR_KEY_EXPIRED, "Key expired"},
+    {ERR_TIME_RESTRICTION, "Time restriction"},
+    {ERR_FLASH_LOCKED, "Flash Locked"},
+    {ERR_FLASH_NOTOWNED, "Flash not owned"},
+    {ERR_FLASH_OTAINIT, "OTA not initialized"},
+    {ERR_FLASH_OUTDATED, "Outdated firmware"},
+    {ERR_FLASH_PARTERROR, "Partition error"},
+    {-1, NULL},
+};
 
 // --- End Errors
 
@@ -174,6 +183,20 @@ static uint32_t reset_button_tm;
     }
     *dst = 0;
 }*/
+
+static const char *err2str(int code) {
+    for (int idx =0; errors[idx].code != -1; idx++) {
+        if (errors[idx].code == code){
+            return errors[idx].desc;
+        }
+    }
+    return "";
+}
+
+static void resp_error(cJSON* json_resp, int code){
+        cJSON_AddNumberToObject(json_resp, "e", code);
+        cJSON_AddStringToObject(json_resp, "d", err2str(code));
+}
 
 static char *nctime_r(const time_t *timep, char *buf){
     char *ret = ctime_r(timep, buf);
@@ -750,8 +773,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     json_resp = cJSON_CreateObject();
     // Check key validity 
     if (set_access_data(session[conn].key_id, session[conn].key_version) < 0){
-        cJSON_AddNumberToObject(json_resp, "e", ERR_OLD_KEY_VERSION);
-        cJSON_AddStringToObject(json_resp, "d", ERR_OLD_KEY_VERSION_S);
+        resp_error(json_resp, ERR_OLD_KEY_VERSION);
         ret = 1;
         goto exitfn;
     }
@@ -768,23 +790,20 @@ static int do_login(uint16_t conn, const char* cmd) {
     }
 
     if (chk_expiration(conn) != 0 ){
-        cJSON_AddNumberToObject(json_resp, "e", ERR_KEY_EXPIRED);
-        cJSON_AddStringToObject(json_resp, "d", ERR_KEY_EXPIRED_S);
+        resp_error(json_resp, ERR_KEY_EXPIRED);
         ret = 1;
         goto exitfn;
     }
 
     if (chk_time_res(conn, "y", true) != 0 ){
-        cJSON_AddNumberToObject(json_resp, "e", ERR_TIME_RESTRICTION);
-        cJSON_AddStringToObject(json_resp, "d", ERR_TIME_RESTRICTION_S);
+        resp_error(json_resp, ERR_TIME_RESTRICTION);
         ret = 1;
         ESP_LOGI("LOGIN", "[%d] Don't pass time restriction allow rules", conn);
         goto exitfn;
     }
 
     if (chk_time_res(conn, "z", false) == 0 ){
-        cJSON_AddNumberToObject(json_resp, "e", ERR_TIME_RESTRICTION);
-        cJSON_AddStringToObject(json_resp, "d", ERR_TIME_RESTRICTION_S);
+        resp_error(json_resp, ERR_TIME_RESTRICTION);
         ret = 1;
         ESP_LOGI("LOGIN", "[%d] Don't pass time restriction deny rules", conn);
         goto exitfn;
@@ -864,15 +883,13 @@ static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON_AddStringToObject(json_resp, "tzn", config.tzn);
     return 0; 
 fail:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-    cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+    resp_error(json_resp, ERR_INVALID_PARAMS);
     return ret;
 }
 
 static int do_cmd_fl(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     if (ota.lock) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_LOCKED);
-        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_LOCKED_S);
+        resp_error(json_resp, ERR_FLASH_LOCKED);
         return 0;
     }
     ota.lock = true;
@@ -896,35 +913,30 @@ static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON* json_item = NULL;
 
     if (!session[conn].ota_lock){
-        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_NOTOWNED);
-        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_NOTOWNED_S);
+        resp_error(json_resp, ERR_FLASH_NOTOWNED);
         return 0;
     }
     json_item = cJSON_GetObjectItem(json_cmd, "update");
     if(json_item == NULL || !(json_item->type & cJSON_Number)) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        resp_error(json_resp, ERR_INVALID_PARAMS);
         return 1;
     }
     if (json_item->valueint <= ota.running_update || json_item->valueint < ota.running_update) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_OUTDATED);
-        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_OUTDATED_S);
+        resp_error(json_resp, ERR_FLASH_OUTDATED);
         return 0;
     }
     uint32_t update = json_item->valueint;
 
     json_item = cJSON_GetObjectItem(json_cmd, "hash");
     if(json_item == NULL || !(json_item->type & cJSON_String)) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        resp_error(json_resp, ERR_INVALID_PARAMS);
         return 1;
     }
     char *hash = json_item->valuestring;
 
     json_item = cJSON_GetObjectItem(json_cmd, "size");
     if(json_item == NULL || !(json_item->type & cJSON_Number)) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-        cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
+        resp_error(json_resp, ERR_INVALID_PARAMS);
         return 1;
     }
     size_t size = json_item->valueint;
@@ -943,13 +955,11 @@ static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     ota.size = size;
     ota.part = esp_ota_get_next_update_partition(NULL);
     if (ota.part == NULL) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
-        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
+        resp_error(json_resp, ERR_FLASH_PARTERROR);
         return 0;
     }
     if (esp_ota_begin(ota.part, ota.size, &ota.handle) != ESP_OK) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
-        cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
+        resp_error(json_resp, ERR_FLASH_PARTERROR);
         return 0;
     }
     mbedtls_sha256_init(&ota.sha256_ctx);
@@ -966,61 +976,47 @@ static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
 
     if (!session[conn].ota_lock){
         ret = 0;
-        goto exitfn_not_owned;
+        resp_error(json_resp, ERR_FLASH_NOTOWNED);
+        goto exitfn;
     }
 
     if (!ota.start) {
         ret = 0;
-        goto exitfn_ota_init;
+        resp_error(json_resp, ERR_FLASH_OTAINIT);
+        goto exitfn;
     }
 
     json_item = cJSON_GetObjectItem(json_cmd, "data");
     if(json_item == NULL || !(json_item->type & cJSON_String)) {
         ret = 1;
-        goto exitfn_invalid_params;
+        resp_error(json_resp, ERR_INVALID_PARAMS);
+        goto exitfn;
     }
     if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
         ret = 1;
-        goto exitfn_invalid_params;
+        resp_error(json_resp, ERR_INVALID_PARAMS);
+        goto exitfn;
     }
     buffer = malloc(olen);
     if (buffer == NULL) {
         ret = 1;
-        goto exitfn_internal_error;
+        resp_error(json_resp, ERR_INTERNAL);
+        goto exitfn;
     }
     if(mbedtls_base64_decode(buffer, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
         ret = 1;
-        goto exitfn_internal_error;
+        resp_error(json_resp, ERR_INTERNAL);
+        goto exitfn;
     }
     if (esp_ota_write(ota.handle, buffer, olen) != ESP_OK) {
         ret = 0;
-        goto exitfn_part_error;
+        resp_error(json_resp, ERR_FLASH_PARTERROR);
+        goto exitfn;
     }
     mbedtls_sha256_update(&ota.sha256_ctx, buffer, olen);
     ota.offset += olen;
 
     cJSON_AddNumberToObject(json_resp, "offset", ota.offset);
-    
-    goto exitfn;
-exitfn_internal_error:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_INTERNAL);
-    cJSON_AddStringToObject(json_resp, "d", ERR_INTERNAL_S);
-    goto exitfn;
-exitfn_part_error:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_PARTERROR);
-    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_PARTERROR_S);
-    goto exitfn;
-exitfn_ota_init:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_OTAINIT);
-    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_OTAINIT_S);
-    goto exitfn;
-exitfn_not_owned:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_FLASH_NOTOWNED);
-    cJSON_AddStringToObject(json_resp, "d", ERR_FLASH_NOTOWNED_S);
-    goto exitfn;
-exitfn_invalid_params:
-    cJSON_AddNumberToObject(json_resp, "e", ERR_INVALID_PARAMS);
-    cJSON_AddStringToObject(json_resp, "d", ERR_INVALID_PARAMS_S);
     goto exitfn;
 exitfn:
     if (buffer != NULL) {
@@ -1130,8 +1126,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     }
 
     if(chk_cmd_access(conn, cmd_str) != 0) {
-        cJSON_AddNumberToObject(json_resp, "e", ERR_PERMISSION_DENIED);
-        cJSON_AddStringToObject(json_resp, "d", ERR_PERMISSION_DENIED_S);
+        resp_error(json_resp, ERR_PERMISSION_DENIED);
         ret = 0;
         goto exitfn;
     }
@@ -1183,9 +1178,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
 
-
-    cJSON_AddNumberToObject(json_resp, "e", ERR_UNKNOWN_COMMAND);
-    cJSON_AddStringToObject(json_resp, "d", ERR_UNKNOWN_COMMAND_S);
+    resp_error(json_resp, ERR_UNKNOWN_COMMAND);
     ret = 0;
     goto exitfn;
 

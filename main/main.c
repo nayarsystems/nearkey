@@ -598,6 +598,7 @@ static int do_init_config(uint16_t conn, const char* cmd) {
     cJSON_AddNumberToObject(json_resp, "a", MAX_ACTUATORS);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
     cJSON_AddStringToObject(json_resp, "v", FW_VER);
+    cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
     session[conn].conn_timeout = 5;
     ret = 1;
 
@@ -811,6 +812,7 @@ static int do_login(uint16_t conn, const char* cmd) {
 
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddStringToObject(json_resp, "v", FW_VER);
+    cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
     cJSON_AddNumberToObject (json_resp, "now", (double) time(NULL));
     session[conn].login = true;
 

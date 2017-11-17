@@ -30,7 +30,7 @@
 #include "boards.h"
 #include "hwrtc.h"
 
-#define FW_VER "1.2"
+#define FW_VER 1
 #define LOG_TAG "MAIN"
 
 // Boards config
@@ -91,7 +91,6 @@ static void clear_session(uint16_t conn);
 // --- End Function definitions
 
 // Config stuff
-#define CFG_VERSION 5
 #define MAX_ACCESS_ENTRIES 1024
 
 static struct config_s {
@@ -136,10 +135,8 @@ static session_t session[CONFIG_BT_ACL_CONNECTIONS];
 
 // OTA stuff
 typedef struct ota_s {
-    bool lock;
     bool start;
     bool ota_end;
-    uint32_t running_update;
     uint32_t started_update;
     char sha256sum[64];
     mbedtls_sha256_context sha256_ctx;
@@ -149,6 +146,7 @@ typedef struct ota_s {
     size_t offset;
 } ota_t;
 static ota_t ota;
+static bool ota_lock;
 // --- End OTA stuff
 
 // Time restrictions
@@ -604,7 +602,7 @@ static int do_init_config(uint16_t conn, const char* cmd) {
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "a", MAX_ACTUATORS);
     cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
-    cJSON_AddStringToObject(json_resp, "v", FW_VER);
+    cJSON_AddNumberToObject(json_resp, "v", FW_VER);
     cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
     session[conn].conn_timeout = 5;
     ret = 1;
@@ -818,7 +816,7 @@ static int do_login(uint16_t conn, const char* cmd) {
     }
 
     cJSON_AddStringToObject(json_resp, "r", "ok");
-    cJSON_AddStringToObject(json_resp, "v", FW_VER);
+    cJSON_AddNumberToObject(json_resp, "v", FW_VER);
     cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
     cJSON_AddNumberToObject (json_resp, "now", (double) time(NULL));
     session[conn].login = true;
@@ -896,28 +894,6 @@ fail:
     return ret;
 }
 
-static int do_cmd_fl(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    if (ota.lock) {
-        resp_error(json_resp, ERR_FLASH_LOCKED);
-        return 0;
-    }
-    ota.lock = true;
-    session[conn].ota_lock = true;
-    cJSON_AddStringToObject(json_resp, "r", "ok");
-    return 0;
-}
-
-static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddBoolToObject(json_resp, "lock", ota.lock);
-    cJSON_AddBoolToObject(json_resp, "start", ota.start);
-    cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
-    cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
-    cJSON_AddNumberToObject(json_resp,"run_update", ota.running_update);
-    cJSON_AddNumberToObject(json_resp,"size", ota.size);
-    cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
-    return 0;
-}
-
 static void reset_ota() {
     if (ota.start) { // Free resources for started OTA
         mbedtls_sha256_free(&ota.sha256_ctx);
@@ -928,59 +904,107 @@ static void reset_ota() {
     memset(&ota, 0, sizeof(ota));
 }
 
+static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+    cJSON_AddBoolToObject(json_resp, "lock", ota_lock);
+    cJSON_AddBoolToObject(json_resp, "start", ota.start);
+    cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
+    cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
+    cJSON_AddNumberToObject(json_resp,"run_update", FW_VER);
+    cJSON_AddNumberToObject(json_resp,"size", ota.size);
+    cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
+    return 0;
+}
+
 static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON* json_item = NULL;
+    cJSON* cfg_item = NULL;
+    int ret = 0;
 
-    if (!session[conn].ota_lock){
-        resp_error(json_resp, ERR_FLASH_NOTOWNED);
-        return 0;
+    if (ota_lock) {
+        resp_error(json_resp, ERR_FLASH_LOCKED);
+        ret = 0;
+        goto exitfn_fail;
     }
-    json_item = cJSON_GetObjectItem(json_cmd, "update");
+    ota_lock = true;
+    session[conn].ota_lock = true;
+
+    cfg_item = cJSON_GetObjectItem(session[conn].login_obj, "fu");
+    if(cfg_item == NULL) {
+        resp_error(json_resp, ERR_PERMISSION_DENIED);
+        ret = 0;
+        goto exitfn_fail;
+    }
+
+
+    json_item = cJSON_GetObjectItem(cfg_item, "v");
     if(json_item == NULL || !(json_item->type & cJSON_Number)) {
         resp_error(json_resp, ERR_INVALID_PARAMS);
-        return 1;
-    }
-    if (json_item->valueint <= ota.running_update || json_item->valueint < ota.running_update) {
-        resp_error(json_resp, ERR_FLASH_OUTDATED);
-        return 0;
+        ret = 1;
+        goto exitfn_fail;
     }
     uint32_t update = json_item->valueint;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "hash");
+    json_item = cJSON_GetObjectItem(cfg_item, "h");
     if(json_item == NULL || !(json_item->type & cJSON_String)) {
         resp_error(json_resp, ERR_INVALID_PARAMS);
-        return 1;
+        ret = 1;
+        goto exitfn_fail;
     }
     char *hash = json_item->valuestring;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "size");
+    json_item = cJSON_GetObjectItem(json_cmd, "s");
     if(json_item == NULL || !(json_item->type & cJSON_Number)) {
         resp_error(json_resp, ERR_INVALID_PARAMS);
-        return 1;
+        ret = 1;
+        goto exitfn_fail;
     }
     size_t size = json_item->valueint;
 
-    // Check Here signature hash+update+size
 
-    // Prepare OTA 
-    reset_ota();
-    strncpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
-    ota.offset = 0;
-    ota.started_update = update;
-    ota.size = size;
-    ota.part = esp_ota_get_next_update_partition(NULL);
-    if (ota.part == NULL) {
-        resp_error(json_resp, ERR_FLASH_PARTERROR);
-        return 0;
+    if (update <= FW_VER) {
+        resp_error(json_resp, ERR_FLASH_OUTDATED);
+        ret = 0;
+        goto exitfn_fail;
     }
-    if (esp_ota_begin(ota.part, ota.size, &ota.handle) != ESP_OK) {
-        resp_error(json_resp, ERR_FLASH_PARTERROR);
-        return 0;
+
+    if (ota.start) {
+        if (update < ota.started_update) {
+            resp_error(json_resp, ERR_FLASH_OUTDATED);
+            ret = 0;
+            goto exitfn_fail;
+        }
+        if (update > ota.started_update) {
+            reset_ota();
+        }
     }
-    mbedtls_sha256_init(&ota.sha256_ctx);
-    mbedtls_sha256_starts(&ota.sha256_ctx, 0);
-    ota.start = true;
+
+    // Prepare OTA
+    if (!ota.start){ 
+        reset_ota();
+        strncpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
+        ota.offset = 0;
+        ota.started_update = update;
+        ota.size = size;
+        ota.part = esp_ota_get_next_update_partition(NULL);
+        if (ota.part == NULL) {
+            resp_error(json_resp, ERR_FLASH_PARTERROR);
+            ret = 0;
+            goto exitfn_fail;
+        }
+        if (esp_ota_begin(ota.part, ota.size, &ota.handle) != ESP_OK) {
+            resp_error(json_resp, ERR_FLASH_PARTERROR);
+            ret = 0;
+            goto exitfn_fail;
+        }
+        mbedtls_sha256_init(&ota.sha256_ctx);
+        mbedtls_sha256_starts(&ota.sha256_ctx, 0);
+        ota.start = true;
+    }
     return do_cmd_fs(conn, json_cmd, json_resp);
+exitfn_fail:
+    ota_lock = false;
+    session[conn].ota_lock = false;
+    return ret;
 }
 
 static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
@@ -1063,8 +1087,6 @@ static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
             }
             reset_ota();
             reset_tm = 10;
-            
-
         } else {
             resp_error(json_resp, ERR_FLASH_CHECKSUM);
             reset_ota();
@@ -1169,7 +1191,7 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         session[conn].login = false;
         if (session[conn].ota_lock) {
             session[conn].ota_lock = false;
-            ota.lock = false;
+            ota_lock = false;
         }
         ret = 0;
         goto exitok;
@@ -1179,6 +1201,24 @@ static int do_cmd(uint16_t conn, const char* cmd) {
     if(strcmp(cmd_str, "n") == 0) { // Nop
         ret = 0;
         goto exitok;
+    }
+
+    // [fs] flash get state
+    if (strcmp(cmd_str, "fs") == 0){
+        ret = do_cmd_fs(conn, json_cmd, json_resp);
+        goto exitfn;
+    }
+
+    // [fi] flash init
+    if (strcmp(cmd_str, "fi") == 0){
+        ret = do_cmd_fi(conn, json_cmd, json_resp);
+        goto exitfn;
+    }
+
+    // [fw] flash write
+    if (strcmp(cmd_str, "fw") == 0){
+        ret = do_cmd_fw(conn, json_cmd, json_resp);
+        goto exitfn;
     }
 
     if(chk_cmd_access(conn, cmd_str) != 0) {
@@ -1210,30 +1250,6 @@ static int do_cmd(uint16_t conn, const char* cmd) {
         goto exitfn;
     }
 
-    // [fl] flash get lock
-    if (strcmp(cmd_str, "fl") == 0){
-        ret = do_cmd_fl(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
-    // [fs] flash get state
-    if (strcmp(cmd_str, "fs") == 0){
-        ret = do_cmd_fs(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
-    // [fi] flash init
-    if (strcmp(cmd_str, "fi") == 0){
-        ret = do_cmd_fi(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
-    // [fw] flash write
-    if (strcmp(cmd_str, "fw") == 0){
-        ret = do_cmd_fw(conn, json_cmd, json_resp);
-        goto exitfn;
-    }
-
     resp_error(json_resp, ERR_UNKNOWN_COMMAND);
     ret = 0;
     goto exitfn;
@@ -1259,7 +1275,7 @@ exitfn:
 
 static void clear_session(uint16_t conn){
     if (session[conn].ota_lock){
-        ota.lock = false;
+        ota_lock = false;
     }
     SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
     memset(&session[conn], 0, sizeof(session_t));
@@ -1470,6 +1486,7 @@ static int set_access_data(uint32_t idx, uint32_t ts){
 static esp_err_t save_flash_config() {
     esp_err_t err = ESP_OK;
 
+    config.cfg_version = FW_VER;
     err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config));
     if(err != ESP_OK) {
         goto exitfn;
@@ -1493,7 +1510,6 @@ static esp_err_t reset_flash_config() {
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     // Reset main config
     memset(&config, 0, sizeof(config));
-    config.cfg_version = CFG_VERSION;
     strcpy(config.tz, "UTC0");
     strcpy(config.tzn, "Etc/UTC");
     err = save_flash_config();

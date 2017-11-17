@@ -23,7 +23,7 @@
 
 // ESP32-T with ESP32-BIT
 #ifdef CONFIG_VK_BOARD_ESP32T
-#define HW_BOARD "ESP32-BIT"
+#define HW_BOARD "ESP32_BIT"
 #define ACTUATORS_GPIO { 32, 33 }
 #define ACTUATORS_TOUT { 10, 10}
 #define STATUS_LED_GPIO 2

@@ -55,6 +55,7 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_FLASH_OVERRUN 13
 #define ERR_FLASH_CHECKSUM 14
 #define ERR_FLASH_BOOT 15
+#define ERR_FLASH_BOARD 16
 
 typedef struct _code {
     int code;
@@ -77,6 +78,7 @@ static CODE errors[] = {
     {ERR_FLASH_OVERRUN, "Flash overrun"},
     {ERR_FLASH_CHECKSUM, "Flash checksum fail"},
     {ERR_FLASH_BOOT, "Error setting boot partition"},
+    {ERR_FLASH_BOARD, "Incompatible board firmware"},
     {-1, NULL},
 };
 
@@ -908,6 +910,7 @@ static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON_AddBoolToObject(json_resp, "lock", ota_lock);
     cJSON_AddBoolToObject(json_resp, "start", ota.start);
     cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
+    cJSON_AddStringToObject(json_resp,"board", HW_BOARD);
     cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
     cJSON_AddNumberToObject(json_resp,"run_update", FW_VER);
     cJSON_AddNumberToObject(json_resp,"size", ota.size);
@@ -952,7 +955,15 @@ static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     }
     char *hash = json_item->valuestring;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "s");
+    json_item = cJSON_GetObjectItem(cfg_item, "b");
+    if(json_item == NULL || !(json_item->type & cJSON_String)) {
+        resp_error(json_resp, ERR_INVALID_PARAMS);
+        ret = 1;
+        goto exitfn_fail;
+    }
+    char *board = json_item->valuestring;
+
+    json_item = cJSON_GetObjectItem(cfg_item, "s");
     if(json_item == NULL || !(json_item->type & cJSON_Number)) {
         resp_error(json_resp, ERR_INVALID_PARAMS);
         ret = 1;
@@ -967,13 +978,20 @@ static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
         goto exitfn_fail;
     }
 
+    if (strcmp(board, HW_BOARD) != 0) {
+        resp_error(json_resp, ERR_FLASH_BOARD);
+        ret = 0;
+        goto exitfn_fail;
+    }
+
     if (ota.start) {
         if (update < ota.started_update) {
             resp_error(json_resp, ERR_FLASH_OUTDATED);
             ret = 0;
             goto exitfn_fail;
         }
-        if (update > ota.started_update) {
+
+        if (update > ota.started_update || strcmp(hash, ota.sha256sum) != 0) {
             reset_ota();
         }
     }

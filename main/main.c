@@ -7,6 +7,8 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "sodium.h"
+#include "cwpack.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "esp_bt_defs.h"
@@ -97,7 +99,8 @@ static void clear_session(uint16_t conn);
 
 static struct config_s {
     uint32_t cfg_version;
-    uint8_t master_key[32];
+    uint8_t public_key[crypto_box_PUBLICKEYBYTES];
+    uint8_t secret_key[crypto_box_SECRETKEYBYTES];
     uint8_t vk_id[6];
     char tz[64];
     char tzn[64];
@@ -121,7 +124,7 @@ typedef struct session_s {
     uint32_t key_version;
     uint32_t key_id;
     uint8_t derived_key[32];
-    uint32_t rx_buffer_pos;
+    uint32_t rx_buffer_len;
     char rx_buffer[RX_BUFFER_SIZE];
     cJSON* login_obj;
     uint64_t nonce;
@@ -465,164 +468,6 @@ exitfn:
     return ret;
 }
 
-
-static int do_init_config(uint16_t conn, const char* cmd) {
-    int ret = 0;
-    size_t olen;
-    cJSON* json_obj = NULL;
-    cJSON* json_item = NULL;
-    cJSON* json_resp = NULL;
-
-    json_obj = cJSON_Parse(cmd);
-    if(json_obj == NULL) {
-        ESP_LOGE("CONFIG", "[%d] Invalid json data", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_obj->type & cJSON_Object)) {
-        ESP_LOGE("CONFIG", "[%d] JSON login is not object type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    json_item = cJSON_GetObjectItem(json_obj, "t");
-    if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "[%d] Login object hasn't [t] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "[%d] JSON entry [t] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(strcmp(json_item->valuestring, "c") != 0) {
-        ESP_LOGE("CONFIG", "[%d] Command must be \"c\" type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Decode master key
-    json_item = cJSON_GetObjectItem(json_obj, "m");
-    if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "[%d] config command hasn't [m] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "[%d] JSON entry [m] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(mbedtls_base64_decode(config.master_key, sizeof(config.master_key), &olen, (uint8_t*)json_item->valuestring,
-                             strlen(json_item->valuestring)) != 0) {
-        ESP_LOGE("CONFIG", "[%d] Error decoding master key.", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(olen != sizeof(config.master_key)) {
-        ESP_LOGE("CONFIG", "[%d] Master key size mismatch: %d != %d", conn, olen, sizeof(config.master_key));
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Decode virkey id
-    json_item = cJSON_GetObjectItem(json_obj, "i");
-    if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "[%d] config command hasn't [i] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "[%d] JSON entry [i] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(mbedtls_base64_decode(config.vk_id, sizeof(config.vk_id), &olen, (uint8_t*)json_item->valuestring,
-                             strlen(json_item->valuestring)) != 0) {
-        ESP_LOGE("CONFIG", "[%d] Error decoding virkey id.", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(olen != sizeof(config.vk_id)) {
-        ESP_LOGE("CONFIG", "[%d] virkey id size mismatch: %d != %d", conn, olen, sizeof(config.master_key));
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Get timestamp
-    json_item = cJSON_GetObjectItem(json_obj, "now");
-    if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "[%d] config command hasn't [now] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("CONFIG", "[%d] JSON entry [now] isn't number type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    struct timeval tv = {0};
-    tv.tv_sec = (time_t) json_item->valuedouble;
-    settimeofday(&tv, NULL);
-
-    // Get TZ string
-    json_item = cJSON_GetObjectItem(json_obj, "tz");
-    if(json_item == NULL) {
-        ESP_LOGE("CONFIG", "[%d] config command hasn't [tz] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CONFIG", "[%d] JSON entry [tz] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
-
-    // Get TZN string
-    json_item = cJSON_GetObjectItem(json_obj, "tzn");
-    if(json_item != NULL) {
-        if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("CONFIG", "[%d] JSON entry [tzn] isn't string type", conn);
-            ret = 1;
-            goto exitfn;
-        }
-        strlcpy(config.tzn, json_item->valuestring, sizeof(config.tzn));
-    } else {
-        strcpy(config.tzn, "Etc/UTC");
-    }
-
-    save_flash_config();
-
-#ifdef RTC_DRIVER
-    systohc();
-#endif
-
-    reset_tm = 2;
-
-    json_resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(json_resp, "r", "ok");
-    cJSON_AddNumberToObject(json_resp, "a", MAX_ACTUATORS);
-    cJSON_AddNumberToObject(json_resp, "u", MAX_ACCESS_ENTRIES);
-    cJSON_AddNumberToObject(json_resp, "v", FW_VER);
-    cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
-    session[conn].conn_timeout = 5;
-    ret = 1;
-
-exitfn:
-    if(json_obj != NULL) {
-        cJSON_Delete(json_obj);
-    }
-    if(json_resp != NULL) {
-        if(respond(conn, json_resp, false, false) != 0) {
-            ESP_LOGE("CONFIG", "[%d] Fail sending response", conn);
-            ret = 1;
-        }
-        cJSON_Delete(json_resp);
-    }
-
-    return ret;
-}
 
 static int do_login(uint16_t conn, const char* cmd) {
     int ret = 0;
@@ -1375,23 +1220,32 @@ static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
         retval = 1;
         goto exitfn;
     }
-    if (session[conn].rx_buffer_pos + data_len > (RX_BUFFER_SIZE - 2)){
+    if (session[conn].rx_buffer_len + data_len > (RX_BUFFER_SIZE - 2)){
         retval = 1;
         ESP_LOGE(LOG_TAG, "[%d] RX buffer overflow", conn);
-        goto exitfn;
+        goto exit_clear;
     }
-    memcpy(&session[conn].rx_buffer[session[conn].rx_buffer_pos], data, data_len);
-    session[conn].rx_buffer_pos += data_len;
-    session[conn].rx_buffer[session[conn].rx_buffer_pos] = 0;
+    memcpy(&session[conn].rx_buffer[session[conn].rx_buffer_len], data, data_len);
+    session[conn].rx_buffer_len += data_len;
+    session[conn].rx_buffer[session[conn].rx_buffer_len] = 0;
 
-    char* end_cmd = strchr(session[conn].rx_buffer, 10); // Search for "\n"
-    if(end_cmd != NULL) {
-        *end_cmd = '\0';
+    if(session[conn].rx_buffer_len > 0 && session[conn].rx_buffer[session[conn].rx_buffer_len - 1] == '\n') { // Last character is \n
+        sizet_t olen = 0;
+        session[conn].rx_buffer_len --;
+        session[conn].rx_buffer[session[conn].rx_buffer_len] = 0; // Remove  last \n
+        if(mbedtls_base64_decode((uint8_t*)session[conn].rx_buffer, RX_BUFFER_SIZE, &olen, (uint8_t*)session[conn].rx_buffer, session[conn].rx_buffer_len) != 0) {
+            retval = 1;
+            ESP_LOGE(LOG_TAG, "[%d] Error decoding input", conn);
+            goto exit_clear;
+        }
+        session[conn].rx_buffer_len = olen;
         cmd_cb(conn);
-        session[conn].rx_buffer_pos = 0;
-        session[conn].rx_buffer[0] = 0;
+        goto exit_clear;
     }
-
+    goto exitfn;
+exit_clear:
+    session[conn].rx_buffer_pos = 0;
+    session[conn].rx_buffer[0] = 0;
 exitfn:    
     xSemaphoreGive(session_sem);
     return retval;
@@ -1528,8 +1382,13 @@ static esp_err_t reset_flash_config() {
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     // Reset main config
     memset(&config, 0, sizeof(config));
-    strcpy(config.tz, "UTC0");
-    strcpy(config.tzn, "Etc/UTC");
+    strcpy(config.tz, "CET-1CEST,M3.5.0,M10.5.0/3");
+    strcpy(config.tzn, "Europe/Madrid");
+    crypto_box_keypair(config.public_key, config.secret_key);
+    uint32_t tmp32 = esp_random();
+    memcpy(&config.vk_id[0], &tmp32, 4);
+    tmp32 = esp_random();
+    memcpy(&config.vk_id[4], &tmp32, 2);
     err = save_flash_config();
     if(err != ESP_OK){
         goto fail;
@@ -1695,9 +1554,10 @@ void app_main(void) {
     time_t now = time(NULL);
     ESP_LOGI(LOG_TAG, "Current time: %s", nctime_r(&now, chbuf));
 
-
-    bin2b64(config.master_key, sizeof(config.master_key), chbuf, sizeof(chbuf));
-    ESP_LOGI(LOG_TAG, "master key: %s", chbuf); // Debug only, remove for production!!
+    bin2b64(config.vk_id, sizeof(config.vk_id), chbuf, sizeof(chbuf));
+    ESP_LOGI(LOG_TAG, "virkey ID: %s", chbuf);
+    bin2b64(config.public_key, sizeof(config.public_key), chbuf, sizeof(chbuf));
+    ESP_LOGI(LOG_TAG, "public key: %s", chbuf);
 
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.vk_id));
 

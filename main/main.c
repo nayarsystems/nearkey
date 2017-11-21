@@ -58,6 +58,9 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_FLASH_CHECKSUM 14
 #define ERR_FLASH_BOOT 15
 #define ERR_FLASH_BOARD 16
+#define ERR_FRAME_UNKNOWN 17
+#define ERR_FRAME_INVALID 18
+#define ERR_APP_ERROR 19
 
 typedef struct _code {
     int code;
@@ -81,6 +84,9 @@ static CODE errors[] = {
     {ERR_FLASH_CHECKSUM, "Flash checksum fail"},
     {ERR_FLASH_BOOT, "Error setting boot partition"},
     {ERR_FLASH_BOARD, "Incompatible board firmware"},
+    {ERR_FRAME_UNKNOWN, "Unknown frame type"},
+    {ERR_FRAME_INVALID, "Invalid frame data"},
+    {ERR_APP_ERROR, "Application level error"},
     {-1, NULL},
 };
 
@@ -203,6 +209,10 @@ static const char *err2str(int code) {
         }
     }
     return "";
+}
+
+static void cw_pack_cstr(cw_pack_context *pc, const char *str) {
+    cw_pack_str(pc, str, strlen(str));
 }
 
 static void msgpack_restore(cw_unpack_context *upc){
@@ -1175,30 +1185,37 @@ static int disconnect_cb(uint16_t conn) {
 }
 
 static int process_info_frame(uint16_t conn){
-    cw_pack_map_size(&session[conn].pc, 5);
-    cw_pack_str(&session[conn].pc, "t", 1); cw_pack_str(&session[conn].pc, "ir", 2);
-    cw_pack_str(&session[conn].pc, "id", 2); cw_pack_str(&session[conn].pc, config.vk_id, 6);
-    cw_pack_str(&session[conn].pc, "pk", 2); cw_pack_str(&session[conn].pc, config.public_key, crypto_box_PUBLICKEYBYTES);
-    
+    cw_pack_context *pc = &session[conn].pc
+    cw_pack_map_size(pc, 8);
+    cw_pack_cstr(pc, "id"); cw_pack_str(pc, config.vk_id, 6);
+    cw_pack_cstr(pc, "pk"); cw_pack_str(pc, config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(pc, "fv"); cw_pack_unsigned(pc, FW_VER);
+    cw_pack_cstr(pc, "bo"); cw_pack_cstr(pc, HW_BOARD);
+    cw_pack_cstr(pc, "ac"); cw_pack_unsigned(pc, MAX_ACTUATORS);
+    cw_pack_cstr(pc, "tz"); cw_pack_str(pc, config.tz);
+    cw_pack_cstr(pc, "tn"); cw_pack_cstr(pc, config.tzn);
+    cw_pack_cstr(pc, "ts"); cw_pack_signed(pc, time(NULL));
+    return 0;
 }
 
 static int cmd_cb(uint16_t conn) {
     int ret = 0;
     char ch_buff[64];
 
-    cw_pack_context_init(&session[conn].pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
+    cw_pack_context *pc = &session[conn].pc;
+    cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
     cw_unpack_context upc;
     cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
 
     if ((int r = msgpack_map_search(upc, "t"))){
         ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", conn, r);
-        ret = 1;
+        ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (if upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
         ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", conn);
-        ret = 1;
+        ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", conn, msgpack_cstr(upc, ch_buff, sizeof(ch_buff));
@@ -1206,7 +1223,8 @@ static int cmd_cb(uint16_t conn) {
     if (msgpack_cmp_str(upc, "i") == 0) {
         ret = process_info_frame(conn);
     } else {
-
+        ret = ERR_FRAME_UNKNOWN;
+        goto exitfn;
     }
 
 exitfn:    
@@ -1215,9 +1233,15 @@ exitfn:
         if(session[conn].conn_timeout > 5){
             session[conn].conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
         }
+        if (ret > 0) {
+            cw_pack_map_size(pc, 2);
+            cw_pack_cstr(pc, "e"); cw_pack_signed(pc, ret);
+            cw_pack_cstr(pc, "d"); cw_pack_cstr(pc, err2str(ret));
+        }
     } else {
         session[conn].conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
     }
+    respond(conn);
     return 0;
 }
 

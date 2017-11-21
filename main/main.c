@@ -115,6 +115,7 @@ static nvs_handle nvs_config_h;
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
 #define RX_BUFFER_SIZE 2048
+#define TX_BUFFER_SIZE 1024
 #define DEF_CONN_TIMEOUT 300
 SemaphoreHandle_t session_sem;
 
@@ -123,10 +124,11 @@ typedef struct session_s {
     uint16_t gatts_if;
     uint32_t key_version;
     uint32_t key_id;
-    uint8_t derived_key[32];
+    uint8_t peer_pk[crypto_box_PUBLICKEYBYTES];
     uint32_t rx_buffer_len;
     char rx_buffer[RX_BUFFER_SIZE];
-    cJSON* login_obj;
+    char tx_buffer[TX_BUFFER_SIZE];
+    cw_pack_context pc;
     uint64_t nonce;
     uint64_t rnonce;
     uint8_t address[6];
@@ -203,6 +205,44 @@ static const char *err2str(int code) {
     return "";
 }
 
+static void msgpack_restore(cw_unpack_context *upc){
+    upc->item.type = CWP_NOT_AN_ITEM;
+    upc->current = upc->start;
+    upc->return_code = CWP_RC_OK;
+    upc->err_no = 0;
+}
+
+static char *msgpack_cstr(cw_unpack_context *upc, char *buff, size_t bsize) {
+    memset(buff, 0, bsize);
+    size_t sz = upc->item.as.str.length
+    if sz > bsize - 1 {
+        sz = bsize -1
+    }
+    strncpy(buff, upc->item.as.str.start, sz);
+    return buff;
+}
+
+static int msgpack_cmp_str(cw_unpack_context *upc, const char *str){
+    if (upc->item.type != CWP_ITEM_STR) return -1;
+    if (upc->item.as.str.length != strlen(str)) return -1;
+    if (strncmp(upc->item.as.str.start, str, upc->item.as.str.length) != 0) return -1;
+    return 0;
+}
+
+static int msgpack_map_search(cw_unpack_context *upc, const char *key){
+    cw_unpack_next(upc);
+    if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_MAP) return -1;
+    uint32_t ms = upc.item.as.map.size;
+    for (uint32_t ms = upc.item.as.map.size; ms > 0 ; ms --) {
+        cw_unpack_next(upc);
+        if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_STR) return -1;
+        if (msgpack_cmp_str(upc, key) == 0){
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static void resp_error(cJSON* json_resp, int code){
         cJSON_AddNumberToObject(json_resp, "e", code);
         cJSON_AddStringToObject(json_resp, "d", err2str(code));
@@ -228,63 +268,11 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(uint16_t conn, cJSON* resp, bool add_nonce, bool add_signature) {
-    int res = 0;
-    char* json_str = NULL;
-    char* sign_str = NULL;
-    char* res_str = NULL;
-    uint8_t sign_bin[32];
-    char nonce_str[32];
-    mbedtls_sha256_context sha256_ctx = {};
-    size_t olen = 0;
-
-    // Append n and x nonce fields
-    if(add_nonce) {
-        snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].nonce);
-        cJSON_AddStringToObject(resp, "n", nonce_str);
-    }
-    json_str = cJSON_PrintUnformatted(resp);
-    if(json_str == NULL) {
-        ESP_LOGE("RESPOND", "[%d] Fail encoding JSON data", conn);
-        res = 1;
-        goto exitfn;
-    }
-    if(add_signature) {
-        // Compute signature
-        snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].rnonce);
-        session[conn].rnonce++; // Increment rnonce for next response
-        mbedtls_sha256_init(&sha256_ctx);
-        mbedtls_sha256_starts(&sha256_ctx, 0);
-        mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_str, strlen(json_str));
-        mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
-        mbedtls_sha256_update(&sha256_ctx, session[conn].derived_key, sizeof(session[conn].derived_key));
-        mbedtls_sha256_finish(&sha256_ctx, sign_bin);
-        mbedtls_sha256_free(&sha256_ctx);
-        mbedtls_base64_encode(NULL, 0, &olen, sign_bin, sizeof(sign_bin));
-        sign_str = calloc(1, olen + 1);
-        if(sign_str == NULL) {
-            res = 1;
-            goto exitfn;
-        }
-        mbedtls_base64_encode((uint8_t*)sign_str, olen, &olen, sign_bin, DEF_SIGNATURE_SIZE);
-        asprintf(&res_str, "%s~%s\n", json_str, sign_str);
-    } else {
-        asprintf(&res_str, "%s\n", json_str);
-    }
-    gatts_send_response(conn, session[conn].gatts_if, res_str);
-    ESP_LOGI("RESPOND", "[%d] Raw response: %s", conn, res_str);
-
-exitfn:
-    if(json_str != NULL) {
-        free(json_str);
-    }
-    if(sign_str != NULL) {
-        free(sign_str);
-    }
-    if(res_str != NULL) {
-        free(res_str);
-    }
-    return res;
+static int respond(uint16_t conn) {
+    size_t sz = session[conn].pc.current - session[conn].pc.start;
+    gatts_send_response(conn, session[conn].gatts_if, sz);
+    ESP_LOGI("RESPOND", "[%d] Send response [sz:%d]", conn, sz);
+    return 0;
 }
 
 static int cmp_perm(const char *perm, const char *cmd){
@@ -1186,21 +1174,42 @@ static int disconnect_cb(uint16_t conn) {
     return ret;
 }
 
+static int process_info_frame(uint16_t conn){
+    cw_pack_map_size(&session[conn].pc, 5);
+    cw_pack_str(&session[conn].pc, "t", 1); cw_pack_str(&session[conn].pc, "ir", 2);
+    cw_pack_str(&session[conn].pc, "id", 2); cw_pack_str(&session[conn].pc, config.vk_id, 6);
+    cw_pack_str(&session[conn].pc, "pk", 2); cw_pack_str(&session[conn].pc, config.public_key, crypto_box_PUBLICKEYBYTES);
+    
+}
+
 static int cmd_cb(uint16_t conn) {
     int ret = 0;
     char ch_buff[64];
 
-    time_t now = time(NULL);
-    ESP_LOGI(LOG_TAG, "[%d] Command: %s [%s]", conn, session[conn].rx_buffer, nctime_r(&now, ch_buff));
-    if(!session[conn].login) {
-        if(!is_configured()) {
-            ret = do_init_config(conn, session[conn].rx_buffer);
-        } else {
-            ret = do_login(conn, session[conn].rx_buffer);
-        }
-    } else {
-        ret = do_cmd(conn, session[conn].rx_buffer);
+    cw_pack_context_init(&session[conn].pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
+    cw_unpack_context upc;
+    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+
+    if ((int r = msgpack_map_search(upc, "t"))){
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", conn, r);
+        ret = 1;
+        goto exitfn;
     }
+    cw_unpack_next(&upc);
+    if (if upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+        ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", conn);
+        ret = 1;
+        goto exitfn;
+    }
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", conn, msgpack_cstr(upc, ch_buff, sizeof(ch_buff));
+
+    if (msgpack_cmp_str(upc, "i") == 0) {
+        ret = process_info_frame(conn);
+    } else {
+
+    }
+
+exitfn:    
     if(ret != 0) {
         session[conn].login = false; // Logout on unrecoverable error
         if(session[conn].conn_timeout > 5){
@@ -1220,32 +1229,29 @@ static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
         retval = 1;
         goto exitfn;
     }
-    if (session[conn].rx_buffer_len + data_len > (RX_BUFFER_SIZE - 2)){
+    if (session[conn].rx_buffer_len + data_len > RX_BUFFER_SIZE){
         retval = 1;
         ESP_LOGE(LOG_TAG, "[%d] RX buffer overflow", conn);
         goto exit_clear;
     }
     memcpy(&session[conn].rx_buffer[session[conn].rx_buffer_len], data, data_len);
     session[conn].rx_buffer_len += data_len;
-    session[conn].rx_buffer[session[conn].rx_buffer_len] = 0;
 
-    if(session[conn].rx_buffer_len > 0 && session[conn].rx_buffer[session[conn].rx_buffer_len - 1] == '\n') { // Last character is \n
-        sizet_t olen = 0;
-        session[conn].rx_buffer_len --;
-        session[conn].rx_buffer[session[conn].rx_buffer_len] = 0; // Remove  last \n
-        if(mbedtls_base64_decode((uint8_t*)session[conn].rx_buffer, RX_BUFFER_SIZE, &olen, (uint8_t*)session[conn].rx_buffer, session[conn].rx_buffer_len) != 0) {
-            retval = 1;
-            ESP_LOGE(LOG_TAG, "[%d] Error decoding input", conn);
-            goto exit_clear;
-        }
-        session[conn].rx_buffer_len = olen;
+    cw_unpack_context upc;
+    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+    cw_skip_items(&upc, 1);
+
+    if(upc.return_code != CWP_RC_OK && upc.return_code != CWP_RC_END_OF_INPUT && upc.return_code != CWP_RC_BUFFER_UNDERFLOW) {
+        ESP_LOGE(LOG_TAG, "[%d] MSGPACK decode error: %d", conn, upc.return_code);
+    }
+
+    if (upc.return_code == CWP_RC_OK) {
         cmd_cb(conn);
         goto exit_clear;
     }
     goto exitfn;
 exit_clear:
     session[conn].rx_buffer_pos = 0;
-    session[conn].rx_buffer[0] = 0;
 exitfn:    
     xSemaphoreGive(session_sem);
     return retval;

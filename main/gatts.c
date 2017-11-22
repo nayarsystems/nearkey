@@ -383,9 +383,9 @@ esp_err_t gatts_stop_adv() {
     return esp_ble_gap_stop_advertising();
 }
 
-ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const char* resp, size_t len) {
+ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const uint8_t* resp, size_t len) {
     esp_err_t res = ESP_OK;
-    size_t sent = 0;
+    ssize_t sent = 0;
     uint8_t* ptr = (uint8_t *)resp;
 
     while(len) {

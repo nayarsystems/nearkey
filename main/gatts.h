@@ -12,6 +12,6 @@ int init_gatts(gatts_connect_cb_t conn_cb,
                const uint8_t *vk_id);
 
 esp_err_t gatts_close_connection(uint16_t conn_id, uint16_t gatts_if);
-ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const char* resp);
+ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const uint8_t *resp, size_t len);
 esp_err_t gatts_start_adv();
 esp_err_t gatts_stop_adv();

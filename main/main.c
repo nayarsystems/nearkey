@@ -224,9 +224,9 @@ static void msgpack_restore(cw_unpack_context *upc){
 
 static char *msgpack_cstr(cw_unpack_context *upc, char *buff, size_t bsize) {
     memset(buff, 0, bsize);
-    size_t sz = upc->item.as.str.length
-    if sz > bsize - 1 {
-        sz = bsize -1
+    size_t sz = upc->item.as.str.length;
+    if (sz > bsize - 1) {
+        sz = bsize - 1;
     }
     strncpy(buff, upc->item.as.str.start, sz);
     return buff;
@@ -242,13 +242,11 @@ static int msgpack_cmp_str(cw_unpack_context *upc, const char *str){
 static int msgpack_map_search(cw_unpack_context *upc, const char *key){
     cw_unpack_next(upc);
     if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_MAP) return -1;
-    uint32_t ms = upc.item.as.map.size;
-    for (uint32_t ms = upc.item.as.map.size; ms > 0 ; ms --) {
+    for (uint32_t ms = upc->item.as.map.size; ms > 0 ; ms --) {
         cw_unpack_next(upc);
         if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_STR) return -1;
-        if (msgpack_cmp_str(upc, key) == 0){
-            return 0;
-        }
+        if (msgpack_cmp_str(upc, key) == 0) return 0;
+        cw_skip_items(upc, 1); // Skip value item
     }
     return -1;
 }
@@ -280,7 +278,7 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
 
 static int respond(uint16_t conn) {
     size_t sz = session[conn].pc.current - session[conn].pc.start;
-    gatts_send_response(conn, session[conn].gatts_if, sz);
+    gatts_send_response(conn, session[conn].gatts_if, session[conn].pc.start, sz);
     ESP_LOGI("RESPOND", "[%d] Send response [sz:%d]", conn, sz);
     return 0;
 }
@@ -301,7 +299,7 @@ static int cmp_perm(const char *perm, const char *cmd){
     return ret;
 }
 
-static int chk_cmd_access(uint16_t conn, const char* cmd) {
+/* static int chk_cmd_access(uint16_t conn, const char* cmd) {
     int ret = 0;
     int cmdl_size = 0;
 
@@ -339,8 +337,9 @@ static int chk_cmd_access(uint16_t conn, const char* cmd) {
 exitfn:
     return ret;
 }
+ */
 
-static int chk_time_res_str(const char *str){
+/* static int chk_time_res_str(const char *str){
     time_res_t tr = {0};
     size_t olen = 0;
     int ret = 0;
@@ -383,8 +382,9 @@ static int chk_time_res_str(const char *str){
 exitfn:
     return ret;
 }
+ */
 
-static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
+/* static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
     int ret = 0;
     cJSON* list = NULL;
     cJSON* entry = NULL;
@@ -425,8 +425,9 @@ static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
 exitfn:
     return ret;
 }
+ */
 
-static int chk_expiration(uint16_t conn) {
+/* static int chk_expiration(uint16_t conn) {
     int ret = 0;
 
     cJSON* cmd_list = NULL;
@@ -465,9 +466,9 @@ static int chk_expiration(uint16_t conn) {
 exitfn:
     return ret;
 }
+ */
 
-
-static int do_login(uint16_t conn, const char* cmd) {
+/* static int do_login(uint16_t conn, const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
     mbedtls_sha256_context sha256_ctx = {};
@@ -680,8 +681,9 @@ exitfn:
 
     return ret;
 }
+ */
 
-static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+/* static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     int ret = 0;
     struct timeval tv={0};
     cJSON* json_item = NULL;
@@ -738,8 +740,9 @@ fail:
     resp_error(json_resp, ERR_INVALID_PARAMS);
     return ret;
 }
+ */
 
-static void reset_ota() {
+/* static void reset_ota() {
     if (ota.start) { // Free resources for started OTA
         mbedtls_sha256_free(&ota.sha256_ctx);
         if (!ota.ota_end){
@@ -748,8 +751,9 @@ static void reset_ota() {
     }
     memset(&ota, 0, sizeof(ota));
 }
+ */
 
-static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+/* static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON_AddBoolToObject(json_resp, "lock", ota_lock);
     cJSON_AddBoolToObject(json_resp, "start", ota.start);
     cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
@@ -760,8 +764,8 @@ static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
     return 0;
 }
-
-static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+ */
+/* static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON* json_item = NULL;
     cJSON* cfg_item = NULL;
     int ret = 0;
@@ -867,8 +871,8 @@ exitfn_fail:
     session[conn].ota_lock = false;
     return ret;
 }
-
-static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+ */
+/* static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON* json_item = NULL;
     size_t olen = 0;
     int ret = 0;
@@ -963,8 +967,8 @@ exitfn:
     }
     return ret;
 }
-
-static int do_cmd(uint16_t conn, const char* cmd) {
+ */
+/* static int do_cmd(uint16_t conn, const char* cmd) {
     int ret = 0;
     str_list *sl = NULL, *pl = NULL;
     size_t olen = 0;
@@ -1133,12 +1137,12 @@ exitfn:
     }
     return ret;
 }
-
+ */
 static void clear_session(uint16_t conn){
     if (session[conn].ota_lock){
         ota_lock = false;
     }
-    SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
+    //SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
     memset(&session[conn], 0, sizeof(session_t));
     save_access_data();
 }
@@ -1185,14 +1189,14 @@ static int disconnect_cb(uint16_t conn) {
 }
 
 static int process_info_frame(uint16_t conn){
-    cw_pack_context *pc = &session[conn].pc
+    cw_pack_context *pc = &session[conn].pc;
     cw_pack_map_size(pc, 8);
-    cw_pack_cstr(pc, "id"); cw_pack_str(pc, config.vk_id, 6);
-    cw_pack_cstr(pc, "pk"); cw_pack_str(pc, config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(pc, "id"); cw_pack_str(pc, (char *)config.vk_id, 6);
+    cw_pack_cstr(pc, "pk"); cw_pack_str(pc, (char *)config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(pc, "fv"); cw_pack_unsigned(pc, FW_VER);
     cw_pack_cstr(pc, "bo"); cw_pack_cstr(pc, HW_BOARD);
     cw_pack_cstr(pc, "ac"); cw_pack_unsigned(pc, MAX_ACTUATORS);
-    cw_pack_cstr(pc, "tz"); cw_pack_str(pc, config.tz);
+    cw_pack_cstr(pc, "tz"); cw_pack_cstr(pc, config.tz);
     cw_pack_cstr(pc, "tn"); cw_pack_cstr(pc, config.tzn);
     cw_pack_cstr(pc, "ts"); cw_pack_signed(pc, time(NULL));
     return 0;
@@ -1206,21 +1210,21 @@ static int cmd_cb(uint16_t conn) {
     cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
     cw_unpack_context upc;
     cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
-
-    if ((int r = msgpack_map_search(upc, "t"))){
+    int r = msgpack_map_search(&upc, "t");
+    if (r){
         ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", conn, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
-    if (if upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
         ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", conn);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", conn, msgpack_cstr(upc, ch_buff, sizeof(ch_buff));
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", conn, msgpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
 
-    if (msgpack_cmp_str(upc, "i") == 0) {
+    if (msgpack_cmp_str(&upc, "i") == 0) {
         ret = process_info_frame(conn);
     } else {
         ret = ERR_FRAME_UNKNOWN;
@@ -1234,6 +1238,7 @@ exitfn:
             session[conn].conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
         }
         if (ret > 0) {
+            cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
             cw_pack_map_size(pc, 2);
             cw_pack_cstr(pc, "e"); cw_pack_signed(pc, ret);
             cw_pack_cstr(pc, "d"); cw_pack_cstr(pc, err2str(ret));
@@ -1275,7 +1280,7 @@ static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
     }
     goto exitfn;
 exit_clear:
-    session[conn].rx_buffer_pos = 0;
+    session[conn].rx_buffer_len = 0;
 exitfn:    
     xSemaphoreGive(session_sem);
     return retval;

@@ -1191,14 +1191,14 @@ static int disconnect_cb(uint16_t conn) {
 static int process_info_frame(uint16_t conn){
     cw_pack_context *pc = &session[conn].pc;
     cw_pack_map_size(pc, 8);
-    cw_pack_cstr(pc, "id"); cw_pack_str(pc, (char *)config.vk_id, 6);
-    cw_pack_cstr(pc, "pk"); cw_pack_str(pc, (char *)config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(pc, "id"); cw_pack_bin(pc, config.vk_id, 6);
+    cw_pack_cstr(pc, "pk"); cw_pack_bin(pc, config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(pc, "fv"); cw_pack_unsigned(pc, FW_VER);
     cw_pack_cstr(pc, "bo"); cw_pack_cstr(pc, HW_BOARD);
     cw_pack_cstr(pc, "ac"); cw_pack_unsigned(pc, MAX_ACTUATORS);
     cw_pack_cstr(pc, "tz"); cw_pack_cstr(pc, config.tz);
     cw_pack_cstr(pc, "tn"); cw_pack_cstr(pc, config.tzn);
-    cw_pack_cstr(pc, "ts"); cw_pack_signed(pc, time(NULL));
+    cw_pack_cstr(pc, "ts"); cw_pack_unsigned(pc, time(NULL));
     return 0;
 }
 

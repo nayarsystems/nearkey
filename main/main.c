@@ -1,3 +1,7 @@
+#define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
+#define FW_VER 1
+#define LOG_TAG "MAIN"
+
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -32,8 +36,6 @@
 #include "boards.h"
 #include "hwrtc.h"
 
-#define FW_VER 1
-#define LOG_TAG "MAIN"
 
 // Boards config
 static int const act_tout[] = ACTUATORS_TOUT;
@@ -61,6 +63,7 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_FRAME_UNKNOWN 17
 #define ERR_FRAME_INVALID 18
 #define ERR_APP_ERROR 19
+#define ERR_CRYPTO_SIGNATURE 20
 
 typedef struct _code {
     int code;
@@ -87,6 +90,7 @@ static CODE errors[] = {
     {ERR_FRAME_UNKNOWN, "Unknown frame type"},
     {ERR_FRAME_INVALID, "Invalid frame data"},
     {ERR_APP_ERROR, "Application level error"},
+    {ERR_CRYPTO_SIGNATURE, "Invalid signature"},
     {-1, NULL},
 };
 
@@ -107,6 +111,7 @@ static struct config_s {
     uint32_t cfg_version;
     uint8_t public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t secret_key[crypto_box_SECRETKEYBYTES];
+    uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
     char tz[64];
     char tzn[64];
@@ -116,12 +121,14 @@ static bool access_chg;
 static uint32_t access_blk;
 static uint32_t access[MAX_ACCESS_ENTRIES];
 static nvs_handle nvs_config_h;
+static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
 
 // Session stuff
 #define DEF_SIGNATURE_SIZE 32
 #define RX_BUFFER_SIZE 2048
 #define TX_BUFFER_SIZE 1024
+#define RESP_BUFFER_SIZE TX_BUFFER_SIZE - 32
 #define DEF_CONN_TIMEOUT 300
 SemaphoreHandle_t session_sem;
 
@@ -129,14 +136,17 @@ typedef struct session_s {
     time_t creation_ts;
     uint16_t gatts_if;
     uint32_t key_version;
-    uint32_t key_id;
-    uint8_t peer_pk[crypto_box_PUBLICKEYBYTES];
-    uint32_t rx_buffer_len;
-    char rx_buffer[RX_BUFFER_SIZE];
-    char tx_buffer[TX_BUFFER_SIZE];
-    cw_pack_context pc;
-    uint64_t nonce;
-    uint64_t rnonce;
+    uint8_t shared_key[crypto_box_BEFORENMBYTES];
+    uint8_t nonce[crypto_box_NONCEBYTES];
+    uint8_t rnonce[crypto_box_NONCEBYTES];
+    size_t rx_buffer_len;
+    uint8_t *rx_buffer;
+    uint8_t *tx_buffer;
+    uint8_t *resp_buffer;
+    uint8_t *login_data;
+    cw_pack_context pc_tx;
+    cw_pack_context pc_resp;
+    size_t login_len;
     uint8_t address[6];
     int conn_timeout;
     bool connected;
@@ -277,8 +287,8 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
 }
 
 static int respond(uint16_t conn) {
-    size_t sz = session[conn].pc.current - session[conn].pc.start;
-    gatts_send_response(conn, session[conn].gatts_if, session[conn].pc.start, sz);
+    size_t sz = session[conn].pc_tx.current - session[conn].pc_tx.start;
+    gatts_send_response(conn, session[conn].gatts_if, session[conn].pc_tx.start, sz);
     ESP_LOGI("RESPOND", "[%d] Send response [sz:%d]", conn, sz);
     return 0;
 }
@@ -468,22 +478,68 @@ exitfn:
 }
  */
 
-/* static int do_login(uint16_t conn, const char* cmd) {
+static int process_login_frame(uint16_t conn) {
     int ret = 0;
-    str_list *sl = NULL, *pl = NULL;
-    mbedtls_sha256_context sha256_ctx = {};
-    char chbuf[128];
-    char* json_data;
-    char* sign_data;
-    char* nonce_data;
-    cJSON* json_item = NULL;
-    cJSON* json_resp = NULL;
-    uint8_t vk_id[6];
-    size_t olen;
-    uint8_t sig_calc[32] = {0};
-    uint8_t sig_peer[32] = {0};
+    cw_unpack_context upc;
 
-    session[conn].nonce = esp_random(); // New nonce for new login
+    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+    int r = msgpack_map_search(&upc, "d");
+    if (r){
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining encrypted blob: %d", conn, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+        ESP_LOGE(LOG_TAG, "[%d] Invalid type for encrypted blob", conn);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if ( upc.item.as.bin.length <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
+        ESP_LOGE(LOG_TAG, "[%d] encrypted blob too short", conn);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    size_t blob_sz = upc.item.as.bin.length - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
+    SETPTR(session[conn].login_data, malloc(blob_sz));
+    session[conn].login_len = blob_sz;
+    if (crypto_box_open_easy_afternm(session[conn].login_data,
+            upc.item.as.bin.start + crypto_box_NONCEBYTES,
+            upc.item.as.bin.length - crypto_box_NONCEBYTES,
+            upc.item.as.bin.start,
+            ca_shared) != 0) {
+        ESP_LOGE(LOG_TAG, "[%d] Invalid signature", conn);
+        ret = ERR_CRYPTO_SIGNATURE;
+        goto exitfn;
+    }
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "n");
+    if (r){
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining nonce: %d", conn, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+        ESP_LOGE(LOG_TAG, "[%d] Invalid type for nonce", conn);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if ( upc.item.as.bin.length != crypto_box_NONCEBYTES) {
+        ESP_LOGE(LOG_TAG, "[%d] Invalid nonce size", conn);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    memcpy(session[conn].rnonce, upc.item.as.bin.start, upc.item.as.bin.length);
+    randombytes_buf(session[conn].nonce, crypto_box_NONCEBYTES);
+
+    ESP_LOGI(LOG_TAG, "[%d] Login passed", conn);
+    ret = ERR_APP_ERROR;
+    goto exitfn;
+
+
+
+/*     session[conn].nonce = esp_random(); // New nonce for new login
 
     sl = pl = str_split_safe(cmd, "~");
     if(str_list_len(sl) != 3) {
@@ -666,22 +722,11 @@ exitfn:
     cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
     cJSON_AddNumberToObject (json_resp, "now", (double) time(NULL));
     session[conn].login = true;
-
+ */
 exitfn:
-    if(sl != NULL) {
-        str_list_free(sl);
-    }
-    if(json_resp != NULL) {
-        if(respond(conn, json_resp, true, true) != 0) {
-            ESP_LOGE("LOGIN", "[%d] Fail sending response", conn);
-            ret = 1;
-        }
-        cJSON_Delete(json_resp);
-    }
-
     return ret;
 }
- */
+
 
 /* static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     int ret = 0;
@@ -1142,7 +1187,10 @@ static void clear_session(uint16_t conn){
     if (session[conn].ota_lock){
         ota_lock = false;
     }
-    //SETPTR_cJSON(session[conn].login_obj, NULL); // Free login JSON data
+    SETPTR(session[conn].tx_buffer, NULL);
+    SETPTR(session[conn].rx_buffer, NULL);
+    SETPTR(session[conn].resp_buffer, NULL);
+    SETPTR(session[conn].login_data, NULL);
     memset(&session[conn], 0, sizeof(session_t));
     save_access_data();
 }
@@ -1159,15 +1207,16 @@ static bool is_configured(){
 static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr) {
     int ret = 0;
 
-    while(!xSemaphoreTake(session_sem, portMAX_DELAY))
-        ;
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     clear_session(conn);
     memcpy(&session[conn].address, addr, sizeof(((session_t *)0)->address));
     session[conn].gatts_if = gatts_if;
     session[conn].conn_timeout = DEF_CONN_TIMEOUT;
     session[conn].connected = true;
-    session[conn].nonce = esp_random();
     session[conn].creation_ts = time(NULL);
+    SETPTR(session[conn].tx_buffer, malloc(TX_BUFFER_SIZE));
+    SETPTR(session[conn].rx_buffer, malloc(RX_BUFFER_SIZE));
+    SETPTR(session[conn].resp_buffer, malloc(RESP_BUFFER_SIZE));
     ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
              session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
     gatts_start_adv();
@@ -1189,10 +1238,12 @@ static int disconnect_cb(uint16_t conn) {
 }
 
 static int process_info_frame(uint16_t conn){
-    cw_pack_context *pc = &session[conn].pc;
-    cw_pack_map_size(pc, 8);
+    cw_pack_context *pc = &session[conn].pc_tx;
+    cw_pack_map_size(pc, 10);
+    cw_pack_cstr(pc, "t"); cw_pack_cstr(pc, "ri");
     cw_pack_cstr(pc, "id"); cw_pack_bin(pc, config.vk_id, 6);
     cw_pack_cstr(pc, "pk"); cw_pack_bin(pc, config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(pc, "capk"); cw_pack_bin(pc, config.ca_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(pc, "fv"); cw_pack_unsigned(pc, FW_VER);
     cw_pack_cstr(pc, "bo"); cw_pack_cstr(pc, HW_BOARD);
     cw_pack_cstr(pc, "ac"); cw_pack_unsigned(pc, MAX_ACTUATORS);
@@ -1206,8 +1257,9 @@ static int cmd_cb(uint16_t conn) {
     int ret = 0;
     char ch_buff[64];
 
-    cw_pack_context *pc = &session[conn].pc;
-    cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
+    cw_pack_context_init(&session[conn].pc_resp, session[conn].resp_buffer, RESP_BUFFER_SIZE, NULL); // Init command response context
+    cw_pack_context *pc = &session[conn].pc_tx;
+    cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
     cw_unpack_context upc;
     cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
     int r = msgpack_map_search(&upc, "t");
@@ -1226,6 +1278,8 @@ static int cmd_cb(uint16_t conn) {
 
     if (msgpack_cmp_str(&upc, "i") == 0) {
         ret = process_info_frame(conn);
+    } else if (msgpack_cmp_str(&upc, "l") == 0) {
+        ret = process_login_frame(conn);
     } else {
         ret = ERR_FRAME_UNKNOWN;
         goto exitfn;
@@ -1413,6 +1467,7 @@ exitfn:
 
 static esp_err_t reset_flash_config() {
     esp_err_t err = ESP_OK;
+    size_t olen = 0;
 
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
     // Reset main config
@@ -1424,6 +1479,7 @@ static esp_err_t reset_flash_config() {
     memcpy(&config.vk_id[0], &tmp32, 4);
     tmp32 = esp_random();
     memcpy(&config.vk_id[4], &tmp32, 2);
+    mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
     err = save_flash_config();
     if(err != ESP_OK){
         goto fail;
@@ -1482,6 +1538,11 @@ static esp_err_t load_flash_config() {
     ESP_LOGI(LOG_TAG, "Timezone:%s", config.tz);
     setenv("TZ", config.tz, 1);
     tzset();
+    ESP_LOGI(LOG_TAG, "Computing CA shared key...");
+    if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
+        ESP_LOGE(LOG_TAG, "Error computing ca shared key");
+    }
+    ESP_LOGI(LOG_TAG, "Shared key computed");
     err = ESP_OK;
 exitfn:
     return err;
@@ -1591,8 +1652,10 @@ void app_main(void) {
 
     bin2b64(config.vk_id, sizeof(config.vk_id), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "virkey ID: %s", chbuf);
-    bin2b64(config.public_key, sizeof(config.public_key), chbuf, sizeof(chbuf));
+    bin2b64(config.public_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "public key: %s", chbuf);
+    bin2b64(config.ca_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
+    ESP_LOGI(LOG_TAG, "CA key: %s", chbuf);
 
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.vk_id));
 

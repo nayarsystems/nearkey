@@ -96,16 +96,7 @@ static CODE errors[] = {
 
 // --- End Errors
 
-// Function declarations
-static esp_err_t save_flash_config();
-static void set_actuator(int act, int st);
-static esp_err_t save_access_data();
-static int set_access_data(uint32_t idx, uint32_t ts);
-static void clear_session(uint16_t conn);
-// --- End Function definitions
-
 // Config stuff
-#define MAX_ACCESS_ENTRIES 1024
 
 static struct config_s {
     uint32_t cfg_version;
@@ -113,13 +104,12 @@ static struct config_s {
     uint8_t secret_key[crypto_box_SECRETKEYBYTES];
     uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
+    uint64_t key_ver;
+    uint64_t egg_ver; 
     char tz[64];
     char tzn[64];
 } __attribute__((packed)) config;
 
-static bool access_chg;
-static uint32_t access_blk;
-static uint32_t access[MAX_ACCESS_ENTRIES];
 static nvs_handle nvs_config_h;
 static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
@@ -133,6 +123,7 @@ static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 SemaphoreHandle_t session_sem;
 
 typedef struct session_s {
+    uint16_t h;
     time_t creation_ts;
     uint16_t gatts_if;
     uint32_t key_version;
@@ -149,6 +140,7 @@ typedef struct session_s {
     size_t login_len;
     uint8_t address[6];
     int conn_timeout;
+    bool out_time;
     bool connected;
     bool login;
     bool ota_lock;
@@ -195,6 +187,14 @@ static bool erase_on_reset;
 #define RESET_BUTTON_TIME 30 // 3 seconds
 static uint32_t reset_button_tm;
 // --- End Reset button timer
+
+// Function declarations
+static esp_err_t save_flash_config();
+static void set_actuator(int act, int st);
+static void clear_session(session_t *s);
+// --- End Function definitions
+
+
 
 /*static void bin2hex(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     const char* hexconv = "0123456789abcdef";
@@ -261,11 +261,6 @@ static int msgpack_map_search(cw_unpack_context *upc, const char *key){
     return -1;
 }
 
-static void resp_error(cJSON* json_resp, int code){
-        cJSON_AddNumberToObject(json_resp, "e", code);
-        cJSON_AddStringToObject(json_resp, "d", err2str(code));
-}
-
 static char *nctime_r(const time_t *timep, char *buf){
     char *ret = ctime_r(timep, buf);
     size_t l = strlen(buf);
@@ -286,11 +281,32 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
-static int respond(uint16_t conn) {
-    size_t sz = session[conn].pc_tx.current - session[conn].pc_tx.start;
-    gatts_send_response(conn, session[conn].gatts_if, session[conn].pc_tx.start, sz);
-    ESP_LOGI("RESPOND", "[%d] Send response [sz:%d]", conn, sz);
+static int respond(session_t *s) {
+    size_t sz = s->pc_tx.current - s->pc_tx.start;
+    gatts_send_response(s->h, s->gatts_if, s->pc_tx.start, sz);
+    ESP_LOGI("RESPOND", "[%d] Send response [sz:%d]", s->h, sz);
     return 0;
+}
+
+static void inc_nonce(uint8_t *nonce) {
+    for (int n = crypto_box_NONCEBYTES - 1; n >= 0; n-- ) {
+        if ((++nonce[n]) != 0) {
+            break;
+        }
+    }
+}
+
+static void encrypt_response(session_t *s, const char *t) {
+    size_t sz = s->pc_resp.current - s->pc_resp.start;
+    uint8_t *enc_data = malloc(sz + crypto_box_MACBYTES);
+
+    crypto_box_easy_afternm(enc_data, s->pc_resp.start, sz, s->rnonce, s->shared_key);
+    inc_nonce(s->rnonce);
+    cw_pack_map_size(&s->pc_tx, 2);
+    cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, t);
+    cw_pack_cstr(&s->pc_tx, "d"); cw_pack_bin(&s->pc_tx, enc_data, sz + crypto_box_MACBYTES);
+    free(enc_data);
+    return;
 }
 
 static int cmp_perm(const char *perm, const char *cmd){
@@ -349,15 +365,15 @@ exitfn:
 }
  */
 
-/* static int chk_time_res_str(const char *str){
+static int chk_time_res_str(const uint8_t *buf, size_t sz){
     time_res_t tr = {0};
-    size_t olen = 0;
     int ret = 0;
 
-    if(mbedtls_base64_decode((uint8_t*)&tr, sizeof(tr), &olen, (uint8_t*)str, strlen(str)) != 0) {
-        ret = -1;
-        goto exitfn;
+    if (sz > sizeof(tr)){
+        sz = sizeof(tr);
     }
+    memcpy(&tr, buf, sz);
+
     time_t now = time(NULL);
     struct tm ltm;
     if (localtime_r(&now, &ltm) == NULL){
@@ -392,15 +408,14 @@ exitfn:
 exitfn:
     return ret;
 }
- */
 
-/* static int chk_time_res(uint16_t conn, const char *field, bool nreq) {
+static int chk_time_res(session_t *s, const char *field, bool nreq) {
     int ret = 0;
-    cJSON* list = NULL;
-    cJSON* entry = NULL;
+    cw_unpack_context upc;
 
-    list = cJSON_GetObjectItem(session[conn].login_obj, field);
-    if(list == NULL) {
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, field);
+    if (r){
         if (nreq) {
             ret = 0;
         } else {
@@ -408,25 +423,20 @@ exitfn:
         }
         goto exitfn;
     }
-    if(!(list->type & cJSON_Array)) {
-        ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions field is not array type", conn);
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
+        ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions field is not array type", s->h);
         ret = 2;
         goto exitfn;
-    }    
-    int sz = cJSON_GetArraySize(list);
-    for(int idx = 0; idx < sz; idx++) {
-        entry = cJSON_GetArrayItem(list, idx);
-        if(entry == NULL) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Unexpected end of time restrictions array", conn);
+    }
+    for(int i = upc.item.as.array.size; i > 0; i--) {
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restriction isn't str/bin type", s->h);
             ret = 2;
             goto exitfn;
         }
-        if(entry->type != cJSON_String) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions item is not string type", conn);
-            ret = 2;
-            goto exitfn;
-        }
-        if(chk_time_res_str(entry->valuestring) == 0) {
+        if(chk_time_res_str(upc.item.as.bin.start, upc.item.as.bin.length) == 0) {
             ret = 0;
             goto exitfn;
         }
@@ -435,288 +445,231 @@ exitfn:
 exitfn:
     return ret;
 }
- */
 
-/* static int chk_expiration(uint16_t conn) {
-    int ret = 0;
-
-    cJSON* cmd_list = NULL;
-    cJSON* cmd_entry = NULL;
-
-    cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "x");
-    if(cmd_list == NULL) {
-        ret = 0;
-        goto exitfn;
-    }
-    if(!(cmd_list->type & cJSON_Array)) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration field is not array type", conn);
-        ret = 2;
-        goto exitfn;
-    }
-    if(cJSON_GetArraySize(cmd_list) != 2) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration array size missmatch", conn);
-        ret = 2;
-        goto exitfn;
-    }
-
-    time_t now = time(NULL);
-    cmd_entry = cJSON_GetArrayItem(cmd_list, 0);
-    if (now < cmd_entry->valuedouble) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid range.", conn);
-        ret = -1;
-        goto exitfn;
-    }
-    cmd_entry = cJSON_GetArrayItem(cmd_list, 1);
-    if (now > cmd_entry->valuedouble) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Time after valid range.", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-exitfn:
-    return ret;
-}
- */
-
-static int process_login_frame(uint16_t conn) {
+static int chk_expiration(session_t *s) {
     int ret = 0;
     cw_unpack_context upc;
 
-    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, "x");
+    if (r){
+        ret = 0;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration field is not array type", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    if(upc.item.as.array.size != 2) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration array size missmatch", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    time_t now = time(NULL);
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Invalid array element type", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    if (now < upc.item.as.u64) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid range.", s->h);
+        ret = -1;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Invalid array element type", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    if (now > upc.item.as.u64) {
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid range.", s->h);
+        ret = -1;
+        goto exitfn;
+    }
+exitfn:
+    return ret;
+}
+
+static int process_login_frame(session_t *s) {
+    int ret = 0, err = 0;
+    cw_unpack_context upc;
+
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     int r = msgpack_map_search(&upc, "d");
     if (r){
-        ESP_LOGE(LOG_TAG, "[%d] Error obtaining encrypted blob: %d", conn, r);
+        ESP_LOGE("LOGIN", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE(LOG_TAG, "[%d] Invalid type for encrypted blob", conn);
+        ESP_LOGE("LOGIN", "[%d] Invalid type for encrypted blob", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     if ( upc.item.as.bin.length <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
-        ESP_LOGE(LOG_TAG, "[%d] encrypted blob too short", conn);
+        ESP_LOGE("LOGIN", "[%d] encrypted blob too short", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     size_t blob_sz = upc.item.as.bin.length - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
-    SETPTR(session[conn].login_data, malloc(blob_sz));
-    session[conn].login_len = blob_sz;
-    if (crypto_box_open_easy_afternm(session[conn].login_data,
+    SETPTR(s->login_data, malloc(blob_sz));
+    s->login_len = blob_sz;
+    if (crypto_box_open_easy_afternm(s->login_data,
             upc.item.as.bin.start + crypto_box_NONCEBYTES,
             upc.item.as.bin.length - crypto_box_NONCEBYTES,
             upc.item.as.bin.start,
             ca_shared) != 0) {
-        ESP_LOGE(LOG_TAG, "[%d] Invalid signature", conn);
+        ESP_LOGE("LOGIN", "[%d] Invalid signature", s->h);
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
     msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "n");
     if (r){
-        ESP_LOGE(LOG_TAG, "[%d] Error obtaining nonce: %d", conn, r);
+        ESP_LOGE("LOGIN", "[%d] Error obtaining nonce: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE(LOG_TAG, "[%d] Invalid type for nonce", conn);
+        ESP_LOGE("LOGIN", "[%d] Invalid type for nonce", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     if ( upc.item.as.bin.length != crypto_box_NONCEBYTES) {
-        ESP_LOGE(LOG_TAG, "[%d] Invalid nonce size", conn);
+        ESP_LOGE("LOGIN", "[%d] Invalid nonce size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    memcpy(session[conn].rnonce, upc.item.as.bin.start, upc.item.as.bin.length);
-    randombytes_buf(session[conn].nonce, crypto_box_NONCEBYTES);
+    memcpy(s->rnonce, upc.item.as.bin.start, upc.item.as.bin.length);
+    randombytes_buf(s->nonce, crypto_box_NONCEBYTES);
 
-    ESP_LOGI(LOG_TAG, "[%d] Login passed", conn);
+    // Process Login data
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    r = msgpack_map_search(&upc, "t");
+    if (r){
+        ESP_LOGE("LOGIN", "[%d] \"t\" field  not present: %d", s->h, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"t\" field type", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if (msgpack_cmp_str(&upc, "l") != 0) {
+        ESP_LOGE("LOGIN", "[%d] command is not \"l\"", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "uk");
+    if (r){
+        ESP_LOGE("LOGIN", "[%d] \"uk\" field not present: %d", s->h, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field type", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if ( upc.item.as.bin.length != crypto_box_PUBLICKEYBYTES) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field size", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if(crypto_box_beforenm(s->shared_key, upc.item.as.bin.start, config.secret_key) != 0) {
+        ESP_LOGE("LOGIN", "Error computing user shared key");
+        ret = ERR_APP_ERROR;
+        goto exitfn;
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "i");
+    if (r){
+        ESP_LOGE("LOGIN", "[%d] \"i\" field not present: %d", s->h, r);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field type", s->h);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if ( upc.item.as.bin.length != sizeof(config.vk_id)) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field size", s->h);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if(memcmp(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id)) != 0) {
+        ESP_LOGE("LOGIN", "[%d] \"i\" field don't match", s->h);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "v");
+    if (r){
+        ESP_LOGE("LOGIN", "[%d] \"v\" field not present: %d", s->h, r);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("LOGIN", "[%d] Invalid type for \"v\" field", s->h);
+        err = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if (upc.item.as.u64 < config.key_ver) {
+        ESP_LOGE("LOGIN", "[%d] Old key version", s->h);
+        err = ERR_OLD_KEY_VERSION;
+        goto exitfn;
+    }
+    if (upc.item.as.u64 > config.key_ver) {
+        config.key_ver = upc.item.as.u64;
+        save_flash_config();
+        ESP_LOGI("LOGIN", "[%d] Updated key to version:%llu", s->h, config.key_ver);
+    }
+
+    if(chk_time()){
+        if (chk_expiration(s) != 0) {
+            err = ERR_KEY_EXPIRED;
+            ESP_LOGE("LOGIN", "[%d] Key expired", s->h);
+            goto exitfn;
+        }
+        if (chk_time_res(s, "y", true) != 0 ){
+            err = ERR_TIME_RESTRICTION;
+            ESP_LOGE("LOGIN", "[%d] Don't pass time restriction allow rules", s->h);
+            goto exitfn;
+        }
+
+        if (chk_time_res(s, "z", false) == 0 ){
+            err = ERR_TIME_RESTRICTION;
+            ESP_LOGE("LOGIN", "[%d] Don't pass time restriction deny rules", s->h);
+            goto exitfn;
+        }
+    } else {
+        s->out_time = true;
+        ESP_LOGE("LOGIN", "[%d] clock out of time. Only \"ts\" command allowed", s->h);
+    }
+
+
+    ESP_LOGI(LOG_TAG, "[%d] Login passed", s->h);
     ret = ERR_APP_ERROR;
     goto exitfn;
 
 
-
-/*     session[conn].nonce = esp_random(); // New nonce for new login
-
-    sl = pl = str_split_safe(cmd, "~");
-    if(str_list_len(sl) != 3) {
-        ESP_LOGE("LOGIN", "[%d] Invalid login data (split login_data/signature/nonce)", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    json_data = pl->s;
-    pl = pl->next;
-    sign_data = pl->s;
-    pl = pl->next;
-    nonce_data = pl->s;
-
-    // Check login signature
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_data, strlen(json_data));
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)"virkey.com", 10);
-    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
-    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
-    mbedtls_sha256_free(&sha256_ctx);
-    olen = sizeof(sig_peer);
-    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
-        ESP_LOGE("LOGIN", "[%d] Invalid b64 signature", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(olen != sizeof(sig_peer)) {
-        ESP_LOGE("LOGIN", "[%d] Signature length error", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(memcmp(sig_calc, sig_peer, olen) != 0) {
-        ESP_LOGE("LOGIN", "[%d] Signature don't match", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Set Session rnonce
-    session[conn].rnonce = strtoull(nonce_data, NULL, 10);
-
-    // Decode json_data
-    SETPTR_cJSON(session[conn].login_obj, cJSON_Parse(json_data));
-    if(session[conn].login_obj == NULL) {
-        ESP_LOGE("LOGIN", "[%d] Invalid json data", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(session[conn].login_obj->type & cJSON_Object)) {
-        ESP_LOGE("LOGIN", "[%d] JSON login is not object type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    json_item = cJSON_GetObjectItem(session[conn].login_obj, "t");
-    if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "[%d] Login object hasn't [t] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("LOGIN", "[%d] JSON entry [t] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(strcmp(json_item->valuestring, "l") != 0) {
-        ESP_LOGE("LOGIN", "[%d] First command must be \"l\" type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    json_item = cJSON_GetObjectItem(session[conn].login_obj, "l");
-    if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "[%d] Login object hasn't [l] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("LOGIN", "[%d] JSON entry [l] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Check virkey ID
-    olen = sizeof(vk_id);
-    if(mbedtls_base64_decode(vk_id, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
-        ESP_LOGE("LOGIN", "[%d] Error decoding virkey id", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(olen != 6) {
-        ESP_LOGE("CMD", "[%d] virkey id size isn't 6 bytes long", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(memcmp(vk_id, config.vk_id, sizeof(config.vk_id)) != 0) {
-        ESP_LOGE("CMD", "[%d] virkey id don't match", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Check key version
-    json_item = cJSON_GetObjectItem(session[conn].login_obj, "v");
-    if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "[%d] Login object hasn't [v] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("LOGIN", "[%d] JSON entry [v] isn't number type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    session[conn].key_version = json_item->valueint;
-
-    json_item = cJSON_GetObjectItem(session[conn].login_obj, "u");
-    if(json_item == NULL) {
-        ESP_LOGE("LOGIN", "[%d] Login object hasn't [u] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_Number)) {
-        ESP_LOGE("LOGIN", "[%d] JSON entry [u] isn't number type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    session[conn].key_id = json_item->valueint;
-
-    // Calculate derived key
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)sl->s, strlen(json_data));
-    mbedtls_sha256_update(&sha256_ctx, sig_calc, sizeof(sig_calc));
-    mbedtls_sha256_update(&sha256_ctx, config.master_key, sizeof(config.master_key));
-    mbedtls_sha256_finish(&sha256_ctx, session[conn].derived_key);
-    mbedtls_sha256_free(&sha256_ctx);
-    bin2b64(session[conn].derived_key, sizeof(session[conn].derived_key), chbuf, sizeof(chbuf));
-    ESP_LOGI("LOGIN", "[%d] Derived key: %s", conn, chbuf);
-
-    json_resp = cJSON_CreateObject();
-    // Check key validity 
-    if (set_access_data(session[conn].key_id, session[conn].key_version) < 0){
-        resp_error(json_resp, ERR_OLD_KEY_VERSION);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Check if clock has a valid time
-    if (!chk_time()){
-        cJSON_DeleteItemFromObject(session[conn].login_obj, "x");
-        cJSON_DeleteItemFromObject(session[conn].login_obj, "y");
-        cJSON_DeleteItemFromObject(session[conn].login_obj, "z");
-        cJSON_DeleteItemFromObject(session[conn].login_obj, "a");
-        json_item = cJSON_CreateArray();
-        cJSON_AddItemToArray(json_item, cJSON_CreateString("ts"));
-        cJSON_AddItemToObject(session[conn].login_obj, "a", json_item);
-    }
-
-    if (chk_expiration(conn) != 0 ){
-        resp_error(json_resp, ERR_KEY_EXPIRED);
-        ret = 1;
-        goto exitfn;
-    }
-
-    if (chk_time_res(conn, "y", true) != 0 ){
-        resp_error(json_resp, ERR_TIME_RESTRICTION);
-        ret = 1;
-        ESP_LOGI("LOGIN", "[%d] Don't pass time restriction allow rules", conn);
-        goto exitfn;
-    }
-
-    if (chk_time_res(conn, "z", false) == 0 ){
-        resp_error(json_resp, ERR_TIME_RESTRICTION);
-        ret = 1;
-        ESP_LOGI("LOGIN", "[%d] Don't pass time restriction deny rules", conn);
-        goto exitfn;
-    }
-
+/*
     cJSON_AddStringToObject(json_resp, "r", "ok");
     cJSON_AddNumberToObject(json_resp, "v", FW_VER);
     cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
@@ -724,6 +677,15 @@ static int process_login_frame(uint16_t conn) {
     session[conn].login = true;
  */
 exitfn:
+    if (ret > 0) {
+        return ret;
+    }
+    if (err > 0) {
+        cw_pack_map_size(&s->pc_resp, 2);
+        cw_pack_cstr(&s->pc_resp, "e"); cw_pack_signed(&s->pc_resp, err);
+        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
+    }
+    encrypt_response(s, "rl");
     return ret;
 }
 
@@ -1183,16 +1145,15 @@ exitfn:
     return ret;
 }
  */
-static void clear_session(uint16_t conn){
-    if (session[conn].ota_lock){
+static void clear_session(session_t *s){
+    if (s->ota_lock){
         ota_lock = false;
     }
-    SETPTR(session[conn].tx_buffer, NULL);
-    SETPTR(session[conn].rx_buffer, NULL);
-    SETPTR(session[conn].resp_buffer, NULL);
-    SETPTR(session[conn].login_data, NULL);
-    memset(&session[conn], 0, sizeof(session_t));
-    save_access_data();
+    SETPTR(s->tx_buffer, NULL);
+    SETPTR(s->rx_buffer, NULL);
+    SETPTR(s->resp_buffer, NULL);
+    SETPTR(s->login_data, NULL);
+    memset(s, 0, sizeof(session_t));
 }
 
 static bool is_configured(){
@@ -1206,19 +1167,20 @@ static bool is_configured(){
 
 static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr) {
     int ret = 0;
-
+    session_t *s = &session[conn];
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
-    clear_session(conn);
-    memcpy(&session[conn].address, addr, sizeof(((session_t *)0)->address));
-    session[conn].gatts_if = gatts_if;
-    session[conn].conn_timeout = DEF_CONN_TIMEOUT;
-    session[conn].connected = true;
-    session[conn].creation_ts = time(NULL);
-    SETPTR(session[conn].tx_buffer, malloc(TX_BUFFER_SIZE));
-    SETPTR(session[conn].rx_buffer, malloc(RX_BUFFER_SIZE));
-    SETPTR(session[conn].resp_buffer, malloc(RESP_BUFFER_SIZE));
-    ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
-             session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
+    clear_session(s);
+    memcpy(&s->address, addr, sizeof(((session_t *)0)->address));
+    s->h = conn;
+    s->gatts_if = gatts_if;
+    s->conn_timeout = DEF_CONN_TIMEOUT;
+    s->connected = true;
+    s->creation_ts = time(NULL);
+    SETPTR(s->tx_buffer, malloc(TX_BUFFER_SIZE));
+    SETPTR(s->rx_buffer, malloc(RX_BUFFER_SIZE));
+    SETPTR(s->resp_buffer, malloc(RESP_BUFFER_SIZE));
+    ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, s->address[0], s->address[1],
+             s->address[2], s->address[3], s->address[4], s->address[5]);
     gatts_start_adv();
     xSemaphoreGive(session_sem);
     return ret;
@@ -1226,60 +1188,58 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
 
 static int disconnect_cb(uint16_t conn) {
     int ret = 0;
-
+    session_t *s = &session[conn];
     while(!xSemaphoreTake(session_sem, portMAX_DELAY))
         ;
-    ESP_LOGI(LOG_TAG, "[%d] Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", conn, session[conn].address[0], session[conn].address[1],
-             session[conn].address[2], session[conn].address[3], session[conn].address[4], session[conn].address[5]);
-    clear_session(conn);
+    ESP_LOGI(LOG_TAG, "[%d] Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", conn, s->address[0], s->address[1],
+             s->address[2], s->address[3], s->address[4], s->address[5]);
+    clear_session(s);
     ESP_LOGI(LOG_TAG,"Free heap size: %d", esp_get_free_heap_size());
     xSemaphoreGive(session_sem);
     return ret;
 }
 
-static int process_info_frame(uint16_t conn){
-    cw_pack_context *pc = &session[conn].pc_tx;
-    cw_pack_map_size(pc, 10);
-    cw_pack_cstr(pc, "t"); cw_pack_cstr(pc, "ri");
-    cw_pack_cstr(pc, "id"); cw_pack_bin(pc, config.vk_id, 6);
-    cw_pack_cstr(pc, "pk"); cw_pack_bin(pc, config.public_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(pc, "capk"); cw_pack_bin(pc, config.ca_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(pc, "fv"); cw_pack_unsigned(pc, FW_VER);
-    cw_pack_cstr(pc, "bo"); cw_pack_cstr(pc, HW_BOARD);
-    cw_pack_cstr(pc, "ac"); cw_pack_unsigned(pc, MAX_ACTUATORS);
-    cw_pack_cstr(pc, "tz"); cw_pack_cstr(pc, config.tz);
-    cw_pack_cstr(pc, "tn"); cw_pack_cstr(pc, config.tzn);
-    cw_pack_cstr(pc, "ts"); cw_pack_unsigned(pc, time(NULL));
+static int process_info_frame(session_t *s){
+    cw_pack_map_size(&s->pc_tx, 10);
+    cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
+    cw_pack_cstr(&s->pc_tx, "id"); cw_pack_bin(&s->pc_tx, config.vk_id, 6);
+    cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&s->pc_tx, "capk"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&s->pc_tx, "fv"); cw_pack_unsigned(&s->pc_tx, FW_VER);
+    cw_pack_cstr(&s->pc_tx, "bo"); cw_pack_cstr(&s->pc_tx, HW_BOARD);
+    cw_pack_cstr(&s->pc_tx, "ac"); cw_pack_unsigned(&s->pc_tx, MAX_ACTUATORS);
+    cw_pack_cstr(&s->pc_tx, "tz"); cw_pack_cstr(&s->pc_tx, config.tz);
+    cw_pack_cstr(&s->pc_tx, "tn"); cw_pack_cstr(&s->pc_tx, config.tzn);
+    cw_pack_cstr(&s->pc_tx, "ts"); cw_pack_unsigned(&s->pc_tx, time(NULL));
     return 0;
 }
 
-static int cmd_cb(uint16_t conn) {
+static int cmd_cb(session_t *s) {
     int ret = 0;
     char ch_buff[64];
 
-    cw_pack_context_init(&session[conn].pc_resp, session[conn].resp_buffer, RESP_BUFFER_SIZE, NULL); // Init command response context
-    cw_pack_context *pc = &session[conn].pc_tx;
-    cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
+    cw_pack_context_init(&s->pc_resp, s->resp_buffer, RESP_BUFFER_SIZE, NULL); // Init command response context
+    cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
     cw_unpack_context upc;
-    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     int r = msgpack_map_search(&upc, "t");
     if (r){
-        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", conn, r);
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", conn);
+        ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", conn, msgpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, msgpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
 
     if (msgpack_cmp_str(&upc, "i") == 0) {
-        ret = process_info_frame(conn);
+        ret = process_info_frame(s);
     } else if (msgpack_cmp_str(&upc, "l") == 0) {
-        ret = process_login_frame(conn);
+        ret = process_login_frame(s);
     } else {
         ret = ERR_FRAME_UNKNOWN;
         goto exitfn;
@@ -1287,41 +1247,42 @@ static int cmd_cb(uint16_t conn) {
 
 exitfn:    
     if(ret != 0) {
-        session[conn].login = false; // Logout on unrecoverable error
-        if(session[conn].conn_timeout > 5){
-            session[conn].conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
+        s->login = false; // Logout on unrecoverable error
+        if(s->conn_timeout > 5){
+            s->conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
         }
         if (ret > 0) {
-            cw_pack_context_init(pc, session[conn].tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
-            cw_pack_map_size(pc, 2);
-            cw_pack_cstr(pc, "e"); cw_pack_signed(pc, ret);
-            cw_pack_cstr(pc, "d"); cw_pack_cstr(pc, err2str(ret));
+            cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
+            cw_pack_map_size(&s->pc_tx, 2);
+            cw_pack_cstr(&s->pc_tx, "e"); cw_pack_signed(&s->pc_tx, ret);
+            cw_pack_cstr(&s->pc_tx, "d"); cw_pack_cstr(&s->pc_tx, err2str(ret));
         }
     } else {
-        session[conn].conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
+        s->conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
     }
-    respond(conn);
+    respond(s);
     return 0;
 }
 
 static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
     int retval = 0;
-
+    session_t *s = &session[conn];
+    
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
-    if(!session[conn].connected) {
+    if(!s->connected) {
         retval = 1;
         goto exitfn;
     }
-    if (session[conn].rx_buffer_len + data_len > RX_BUFFER_SIZE){
+    if (s->rx_buffer_len + data_len > RX_BUFFER_SIZE){
         retval = 1;
         ESP_LOGE(LOG_TAG, "[%d] RX buffer overflow", conn);
         goto exit_clear;
     }
-    memcpy(&session[conn].rx_buffer[session[conn].rx_buffer_len], data, data_len);
-    session[conn].rx_buffer_len += data_len;
+    memcpy(&s->rx_buffer[s->rx_buffer_len], data, data_len);
+    s->rx_buffer_len += data_len;
 
     cw_unpack_context upc;
-    cw_unpack_context_init(&upc, session[conn].rx_buffer, session[conn].rx_buffer_len, NULL);
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     cw_skip_items(&upc, 1);
 
     if(upc.return_code != CWP_RC_OK && upc.return_code != CWP_RC_END_OF_INPUT && upc.return_code != CWP_RC_BUFFER_UNDERFLOW) {
@@ -1329,12 +1290,12 @@ static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
     }
 
     if (upc.return_code == CWP_RC_OK) {
-        cmd_cb(conn);
+        cmd_cb(s);
         goto exit_clear;
     }
     goto exitfn;
 exit_clear:
-    session[conn].rx_buffer_len = 0;
+    s->rx_buffer_len = 0;
 exitfn:    
     xSemaphoreGive(session_sem);
     return retval;
@@ -1359,91 +1320,6 @@ fail:
     return err;
 }
 
-static esp_err_t load_access_data(){
-    esp_err_t err = ESP_OK;
-
-    access_chg = false;
-    err = nvs_get_u32(nvs_config_h, "access_blk", &access_blk);
-    if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) reading nvs access_blk", err);
-        goto fail;
-    }
-    const esp_partition_t* part = esp_partition_find_first(0x40, ESP_PARTITION_SUBTYPE_ANY, NULL);
-    if (part == NULL){
-        ESP_LOGE(LOG_TAG, "Error, access partition not found");
-        err = ESP_ERR_NVS_NOT_FOUND;
-        goto fail;
-    }
-    err = esp_partition_read(part, sizeof(access) * access_blk, access, sizeof(access));
-    if (err != ESP_OK){
-        ESP_LOGE(LOG_TAG, "Error (%d) writing access data partition", err);
-        goto fail;
-    }
-    ESP_LOGI(LOG_TAG, "acces data loaded from block: %d", access_blk);
-
-fail:
-    return err;
-}
-
-static esp_err_t save_access_data() {
-    esp_err_t err = ESP_OK;
-
-    if (access_chg){
-        const esp_partition_t* part = esp_partition_find_first(0x40, ESP_PARTITION_SUBTYPE_ANY, NULL);
-        if (part == NULL){
-            ESP_LOGE(LOG_TAG, "Error, access partition not found");
-            err = ESP_ERR_NVS_NOT_FOUND;
-            goto fail;
-        }
-        access_blk += 1;
-        if (access_blk * sizeof(access) >= part->size) {
-            access_blk = 0;
-        }
-        err = esp_partition_erase_range(part, sizeof(access) * access_blk, sizeof(access));
-        if (err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) erasing access data partition", err);
-            goto fail;
-        }
-        err = esp_partition_write(part, sizeof(access) * access_blk, access, sizeof(access));
-        if (err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) writing access data partition", err);
-            goto fail;
-        }
-
-        // Save access blk
-        err = nvs_set_u32(nvs_config_h, "access_blk", access_blk);
-        if (err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) writing access_blk data", err);
-            goto fail;
-        }
-        err = nvs_commit(nvs_config_h);
-        if(err != ESP_OK){
-            ESP_LOGE(LOG_TAG, "Error (%d) writing access_blk data (commit)", err);
-            goto fail;
-        }
-        access_chg = false;
-        ESP_LOGI(LOG_TAG, "acces data written to block: %d", access_blk);
-    }
-
-fail:
-    return err;
-}
-
-static int set_access_data(uint32_t idx, uint32_t ts){
-    int ret = -1;
-
-    if (idx >= MAX_ACCESS_ENTRIES) {
-        ret = -1;
-    } else if (access[idx] == ts){
-        ret = 0;
-    } else if (access[idx] < ts){
-        access[idx] = ts;
-        access_chg = true;
-        ret = 1;
-    }
-    return ret;
-}
-
 static esp_err_t save_flash_config() {
     esp_err_t err = ESP_OK;
 
@@ -1464,9 +1340,7 @@ exitfn:
     return err;
 }
 
-
 static esp_err_t reset_flash_config() {
-    esp_err_t err = ESP_OK;
     size_t olen = 0;
 
     ESP_LOGI(LOG_TAG, "Reseting flash config...");
@@ -1475,25 +1349,9 @@ static esp_err_t reset_flash_config() {
     strcpy(config.tz, "CET-1CEST,M3.5.0,M10.5.0/3");
     strcpy(config.tzn, "Europe/Madrid");
     crypto_box_keypair(config.public_key, config.secret_key);
-    uint32_t tmp32 = esp_random();
-    memcpy(&config.vk_id[0], &tmp32, 4);
-    tmp32 = esp_random();
-    memcpy(&config.vk_id[4], &tmp32, 2);
+    randombytes_buf(config.vk_id, sizeof(config.vk_id));
     mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
-    err = save_flash_config();
-    if(err != ESP_OK){
-        goto fail;
-    }
-    memset(access, 0, sizeof(access));
-    access_blk = 0;
-    access_chg = true;
-    err = save_access_data();
-    if(err != ESP_OK){
-        goto fail;
-    }
-
-fail:
-    return err;
+    return save_flash_config();
 }
 
 static esp_err_t load_flash_config() {
@@ -1641,7 +1499,6 @@ void app_main(void) {
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
-    ESP_ERROR_CHECK(load_access_data());
 #ifdef RTC_DRIVER    
     if (hctosys() != 0) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");

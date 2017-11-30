@@ -10,7 +10,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "cJSON.h"
 #include "sodium.h"
 #include "cwpack.h"
 #include "driver/gpio.h"
@@ -325,47 +324,53 @@ static int cmp_perm(const char *perm, const char *cmd){
     return ret;
 }
 
-/* static int chk_cmd_access(uint16_t conn, const char* cmd) {
+static int chk_cmd_access(session_t *s, const char* cmd) {
     int ret = 0;
-    int cmdl_size = 0;
+    char str_buf[32];
+    cw_unpack_context upc;
 
-    cJSON* cmd_list = NULL;
-    cJSON* cmd_entry = NULL;
-
-    cmd_list = cJSON_GetObjectItem(session[conn].login_obj, "a");
-    if(cmd_list == NULL) {
-        ESP_LOGW("CMD", "[%d] There isn't command access list, all commands denied by default", conn);
+    if (s->out_time) { // On clock failure allow only "ts" command
+        if(strcmp(cmd, "ts") == 0) {
+            ret = 0;
+            goto exitfn;
+        }
         ret = 1;
         goto exitfn;
     }
-    if(!(cmd_list->type & cJSON_Array)) {
-        ESP_LOGE("CMD", "[%d] Access login is not array type", conn);
+
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, "a");
+    if (r){
+        ESP_LOGE("CMD", "[%d] There isn't command access list, all commands denied by default", s->h);
         ret = 1;
         goto exitfn;
     }
-    cmdl_size = cJSON_GetArraySize(cmd_list);
-    for(int cmd_idx = 0; cmd_idx < cmdl_size; cmd_idx++) {
-        cmd_entry = cJSON_GetArrayItem(cmd_list, cmd_idx);
-        if(cmd_entry == NULL) {
-            ESP_LOGE("CMD", "[%d] Unexpected end of command array", conn);
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
+        ESP_LOGE("CMD", "[%d] Access list isn't array type", s->h);
+        ret = 1;
+        goto exitfn;
+    }
+    for(int i = upc.item.as.array.size; i > 0; i--) {
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+            ESP_LOGE("CMD", "[%d] Access entry isn't string type", s->h);
             ret = 1;
             goto exitfn;
         }
-        if(cmd_entry->type == cJSON_String) {
-            if (cmp_perm(cmd_entry->valuestring, cmd) == 0) {
-                ret = 0;
-                goto exitfn;
-            }
+        msgpack_cstr(&upc, str_buf, sizeof(str_buf));
+        if (cmp_perm(str_buf, cmd) == 0) {
+            ret = 0;
+            goto exitfn;
         }
     }
     ret = 1;
-
 exitfn:
     return ret;
 }
- */
+ 
 
-static int chk_time_res_str(const uint8_t *buf, size_t sz){
+static int chk_time_res_buf(const uint8_t *buf, size_t sz){
     time_res_t tr = {0};
     int ret = 0;
 
@@ -436,7 +441,7 @@ static int chk_time_res(session_t *s, const char *field, bool nreq) {
             ret = 2;
             goto exitfn;
         }
-        if(chk_time_res_str(upc.item.as.bin.start, upc.item.as.bin.length) == 0) {
+        if(chk_time_res_buf(upc.item.as.bin.start, upc.item.as.bin.length) == 0) {
             ret = 0;
             goto exitfn;
         }
@@ -664,18 +669,12 @@ static int process_login_frame(session_t *s) {
     }
 
 
-    ESP_LOGI(LOG_TAG, "[%d] Login passed", s->h);
-    ret = ERR_APP_ERROR;
-    goto exitfn;
+    s->login = true;
+    cw_pack_map_size(&s->pc_resp, 3);
+    cw_pack_cstr(&s->pc_resp, "fv"); cw_pack_unsigned(&s->pc_resp, FW_VER);
+    cw_pack_cstr(&s->pc_resp, "bo"); cw_pack_cstr(&s->pc_resp, HW_BOARD);
+    cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
 
-
-/*
-    cJSON_AddStringToObject(json_resp, "r", "ok");
-    cJSON_AddNumberToObject(json_resp, "v", FW_VER);
-    cJSON_AddStringToObject(json_resp, "h", HW_BOARD);
-    cJSON_AddNumberToObject (json_resp, "now", (double) time(NULL));
-    session[conn].login = true;
- */
 exitfn:
     if (ret > 0) {
         return ret;
@@ -690,66 +689,70 @@ exitfn:
 }
 
 
-/* static int do_cmd_ts(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
+static int do_cmd_ts(session_t *s){
     int ret = 0;
     struct timeval tv={0};
-    cJSON* json_item = NULL;
     bool conf_save = false;
+    char str[64];
+    cw_unpack_context upc;
 
-    json_item = cJSON_GetObjectItem(json_cmd, "now");
-    if(json_item != NULL) {
-        if(!(json_item->type & cJSON_Number)) {
-            ESP_LOGE("CMD", "[%d] Entry [now] isn't number type", conn);
-            ret = 0;
-            goto fail;
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    int r = msgpack_map_search(&upc, "ts");
+    if (r == 0){
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+            ESP_LOGE("CMD", "[%d] Entry \"ts\" isn't positive integer type", s->h);
+            ret = ERR_INVALID_PARAMS;
+            goto exitfn;
         }
-        tv.tv_sec = (time_t) json_item->valuedouble;
+        tv.tv_sec = (time_t) upc.item.as.u64;
         settimeofday(&tv, NULL);
 #ifdef RTC_DRIVER
         systohc();
 #endif
     }
 
-    json_item = cJSON_GetObjectItem(json_cmd, "tz");
-    if(json_item != NULL) {
-        if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("CMD", "[%d] Entry [tz] isn't string type", conn);
-            ret = 0;
-            goto fail;
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "tz");
+    if (r == 0) {
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+            ESP_LOGE("CMD", "[%d] Entry \"tz\" isn't string type", s->h);
+            ret = ERR_INVALID_PARAMS;
+            goto exitfn;
         }
-        strlcpy(config.tz, json_item->valuestring, sizeof(config.tz));
+        strlcpy(config.tz, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tz));
         setenv("TZ", config.tz, 1);
         tzset();
         conf_save = true;
     }
 
-
-    json_item = cJSON_GetObjectItem(json_cmd, "tzn");
-    if(json_item != NULL) {
-        if(!(json_item->type & cJSON_String)) {
-            ESP_LOGE("CMD", "[%d] Entry [tzn] isn't string type", conn);
-            ret = 0;
-            goto fail;
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "tzn");
+    if (r == 0) {
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+            ESP_LOGE("CMD", "[%d] Entry \"tzn\" isn't string type", s->h);
+            ret = ERR_INVALID_PARAMS;
+            goto exitfn;
         }
-        strlcpy(config.tzn, json_item->valuestring, sizeof(config.tzn));
+        strlcpy(config.tzn, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tzn));
         conf_save = true;
     }
-    
+
     if (conf_save) {
         save_flash_config();
     }
 
-    cJSON_AddNumberToObject(json_resp, "now", (double) time(NULL));
-    cJSON_AddStringToObject(json_resp, "tz", config.tz);
-    cJSON_AddStringToObject(json_resp, "tzn", config.tzn);
-    return 0; 
-fail:
-    resp_error(json_resp, ERR_INVALID_PARAMS);
+    cw_pack_cstr(&s->pc_resp, "tz"); cw_pack_cstr(&s->pc_resp, config.tz);
+    cw_pack_cstr(&s->pc_resp, "tn"); cw_pack_cstr(&s->pc_resp, config.tzn);
+    cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
+
+exitfn:
     return ret;
 }
- */
 
-/* static void reset_ota() {
+static void reset_ota() {
     if (ota.start) { // Free resources for started OTA
         mbedtls_sha256_free(&ota.sha256_ctx);
         if (!ota.ota_end){
@@ -758,7 +761,6 @@ fail:
     }
     memset(&ota, 0, sizeof(ota));
 }
- */
 
 /* static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
     cJSON_AddBoolToObject(json_resp, "lock", ota_lock);
@@ -975,94 +977,59 @@ exitfn:
     return ret;
 }
  */
-/* static int do_cmd(uint16_t conn, const char* cmd) {
-    int ret = 0;
-    str_list *sl = NULL, *pl = NULL;
-    size_t olen = 0;
-    mbedtls_sha256_context sha256_ctx = {};
-    uint8_t sig_calc[32] = {0};
-    uint8_t sig_peer[32] = {0};
-    char nonce_str[32] = {0};
-    char* cmd_str = NULL;
-    char* json_data = NULL;
-    char* sign_data = NULL;
-    cJSON* json_cmd = NULL;
-    cJSON* json_item = NULL;
-    cJSON* json_resp = NULL;
 
+static int process_cmd_frame(session_t *s) {
+    int ret = 0, err = 0;
+    cw_unpack_context upc;
+    char cmd_str[32];
 
-    sl = pl = str_split_safe(cmd, "~");
-    if(str_list_len(sl) != 2) {
-        ESP_LOGE("CMD", "[%d] Invalid command data (split data/signature)", conn);
-        ret = 1;
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    int r = msgpack_map_search(&upc, "d");
+    if (r){
+        ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %d", s->h, r);
+        ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
+        ESP_LOGE("CMD", "[%d] Invalid encrypted blob type", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    uint8_t *start = upc.item.as.bin.start;
+    size_t sz = upc.item.as.bin.length;
+    if (crypto_box_open_easy_afternm(s->rx_buffer, //Overwrite rx_buffer
+            start,
+            sz,
+            s->nonce,
+            s->shared_key) != 0) {
+        ESP_LOGE("LOGIN", "[%d] Invalid signature", s->h);
+        ret = ERR_CRYPTO_SIGNATURE;
+        goto exitfn;
+    }
+    s->rx_buffer_len = sz - crypto_box_MACBYTES;
+    inc_nonce(s->nonce)
 
-    json_data = pl->s;
-    pl = pl->next;
-    sign_data = pl->s;
-
-    // Calculate signature
-    snprintf(nonce_str, sizeof(nonce_str), "%llu", session[conn].nonce);
-    session[conn].nonce++; // Increment nonce for next command
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)json_data, strlen(json_data));
-    mbedtls_sha256_update(&sha256_ctx, (uint8_t*)nonce_str, strlen(nonce_str));
-    mbedtls_sha256_update(&sha256_ctx, session[conn].derived_key, sizeof(session[conn].derived_key));
-    mbedtls_sha256_finish(&sha256_ctx, sig_calc);
-    mbedtls_sha256_free(&sha256_ctx);
-
-    // Check signature
-    olen = sizeof(sig_peer);
-    if(mbedtls_base64_decode(sig_peer, olen, &olen, (uint8_t*)sign_data, strlen(sign_data)) != 0) {
-        ESP_LOGE("CMD", "[%d] Invalid b64 signature", conn);
-        ret = 1;
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    r = msgpack_map_search(&upc, "t");
+    if (r){
+        ESP_LOGE("CMD", "[%d] Cmd object hasn't \"t\" entry", s->h);
+        ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(olen < 16) {
-        ESP_LOGE("CMD", "[%d] Signature too short (%d)", conn, olen);
-        ret = 1;
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR)) {
+        ESP_LOGE("CMD", "[%d] Entry \"t\" isn't string type", s->h);
+        ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(memcmp(sig_calc, sig_peer, olen) != 0) {
-        ESP_LOGE("CMD", "[%d] Signature don't match", conn);
-        ret = 1;
-        goto exitfn;
-    }
-
-    // Decode json data
-    json_cmd = cJSON_Parse(json_data);
-    if(json_cmd == NULL) {
-        ESP_LOGE("CMD", "[%d] Malformed JSON data", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_cmd->type & cJSON_Object)) {
-        ESP_LOGE("CMD", "[%d] JSON is not object type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    json_item = cJSON_GetObjectItem(json_cmd, "t");
-    if(json_item == NULL) {
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't [t] entry", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    if(!(json_item->type & cJSON_String)) {
-        ESP_LOGE("CMD", "[%d] Entry [t] isn't string type", conn);
-        ret = 1;
-        goto exitfn;
-    }
-    cmd_str = json_item->valuestring;
-
-    json_resp = cJSON_CreateObject();
+    msgpack_cstr(&upc, cmd_str, sizeof(cmd_str));
 
     // [q] command (QUIT)
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        session[conn].login = false;
-        if (session[conn].ota_lock) {
-            session[conn].ota_lock = false;
+        s->login = false;
+        if (s->ota_lock) {
+            s->ota_lock = false;
             ota_lock = false;
         }
         ret = 0;
@@ -1075,7 +1042,7 @@ exitfn:
         goto exitok;
     }
 
-    // [fs] flash get state
+/*     // [fs] flash get state
     if (strcmp(cmd_str, "fs") == 0){
         ret = do_cmd_fs(conn, json_cmd, json_resp);
         goto exitfn;
@@ -1092,9 +1059,9 @@ exitfn:
         ret = do_cmd_fw(conn, json_cmd, json_resp);
         goto exitfn;
     }
-
-    if(chk_cmd_access(conn, cmd_str) != 0) {
-        resp_error(json_resp, ERR_PERMISSION_DENIED);
+ */
+    if(chk_cmd_access(s, cmd_str) != 0) {
+        err = ERR_PERMISSION_DENIED;
         ret = 0;
         goto exitfn;
     }
@@ -1108,9 +1075,9 @@ exitfn:
             } else {
                 act_timers[n] = act_tout[n];
             }
-            ESP_LOGI("CMD", "[%d] shoting actuator %d", conn, n);
+            ESP_LOGI("CMD", "[%d] shoting actuator %d", s->h, n);
         } else {
-            ESP_LOGE("CMD", "[%d] actuator %d out of range", conn, n);
+            ESP_LOGE("CMD", "[%d] actuator %d out of range", s->h, n);
         }
         ret = 0;
         goto exitok;
@@ -1118,7 +1085,7 @@ exitfn:
 
     // [ts] command (TIME SET/GET)
     if (strcmp(cmd_str, "ts") == 0){
-        ret = do_cmd_ts(conn, json_cmd, json_resp);
+        ret = do_cmd_ts(s);
         goto exitfn;
     }
 
@@ -1144,7 +1111,7 @@ exitfn:
     }
     return ret;
 }
- */
+ 
 static void clear_session(session_t *s){
     if (s->ota_lock){
         ota_lock = false;
@@ -1240,6 +1207,8 @@ static int cmd_cb(session_t *s) {
         ret = process_info_frame(s);
     } else if (msgpack_cmp_str(&upc, "l") == 0) {
         ret = process_login_frame(s);
+    } else if (msgpack_cmp_str(&upc, "c") == 0) {
+        ret = process_cmd_frame(s);
     } else {
         ret = ERR_FRAME_UNKNOWN;
         goto exitfn;

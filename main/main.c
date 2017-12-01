@@ -76,7 +76,7 @@ static CODE errors[] = {
     {ERR_UNKNOWN_COMMAND, "Unknown command"},
     {ERR_INVALID_PARAMS, "Invalid params"},
     {ERR_KEY_EXPIRED, "Key expired"},
-    {ERR_TIME_RESTRICTION, "Time restriction"},
+    {ERR_TIME_RESTRICTION, "Access denied due to temporary restriction rules"},
     {ERR_FLASH_LOCKED, "Flash Locked"},
     {ERR_FLASH_NOTOWNED, "Flash not owned"},
     {ERR_FLASH_OTAINIT, "OTA not initialized"},
@@ -141,6 +141,7 @@ typedef struct session_s {
     int conn_timeout;
     bool out_time;
     bool connected;
+    bool blocked;
     bool login;
     bool ota_lock;
 } session_t ;
@@ -636,7 +637,6 @@ static int process_login_frame(session_t *s) {
         goto exitfn;
     }
     if (upc.item.as.u64 < config.key_ver) {
-        ESP_LOGE("LOGIN", "[%d] Old key version", s->h);
         err = ERR_OLD_KEY_VERSION;
         goto exitfn;
     }
@@ -649,18 +649,15 @@ static int process_login_frame(session_t *s) {
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;
-            ESP_LOGE("LOGIN", "[%d] Key expired", s->h);
             goto exitfn;
         }
         if (chk_time_res(s, "y", true) != 0 ){
             err = ERR_TIME_RESTRICTION;
-            ESP_LOGE("LOGIN", "[%d] Don't pass time restriction allow rules", s->h);
             goto exitfn;
         }
 
         if (chk_time_res(s, "z", false) == 0 ){
             err = ERR_TIME_RESTRICTION;
-            ESP_LOGE("LOGIN", "[%d] Don't pass time restriction deny rules", s->h);
             goto exitfn;
         }
     } else {
@@ -670,7 +667,8 @@ static int process_login_frame(session_t *s) {
 
 
     s->login = true;
-    cw_pack_map_size(&s->pc_resp, 3);
+    cw_pack_map_size(&s->pc_resp, 4);
+    cw_pack_cstr(&s->pc_resp, "n"); cw_pack_bin(&s->pc_resp, s->nonce, sizeof(s->nonce));
     cw_pack_cstr(&s->pc_resp, "fv"); cw_pack_unsigned(&s->pc_resp, FW_VER);
     cw_pack_cstr(&s->pc_resp, "bo"); cw_pack_cstr(&s->pc_resp, HW_BOARD);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
@@ -683,6 +681,7 @@ exitfn:
         cw_pack_map_size(&s->pc_resp, 2);
         cw_pack_cstr(&s->pc_resp, "e"); cw_pack_signed(&s->pc_resp, err);
         cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
+        ESP_LOGE("LOGIN", "[%d] Login error: (%d) %s", s->h, err, err2str(err));
     }
     encrypt_response(s, "rl");
     return ret;
@@ -707,6 +706,7 @@ static int do_cmd_ts(session_t *s){
         }
         tv.tv_sec = (time_t) upc.item.as.u64;
         settimeofday(&tv, NULL);
+        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, upc.item.as.u64)
 #ifdef RTC_DRIVER
         systohc();
 #endif
@@ -724,6 +724,7 @@ static int do_cmd_ts(session_t *s){
         strlcpy(config.tz, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tz));
         setenv("TZ", config.tz, 1);
         tzset();
+        ESP_LOGI("CMD", "[%d] Time zone posix string set to: %s", s->h, config.tz)
         conf_save = true;
     }
 
@@ -737,13 +738,15 @@ static int do_cmd_ts(session_t *s){
             goto exitfn;
         }
         strlcpy(config.tzn, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tzn));
+        ESP_LOGI("CMD", "[%d] Time zone name string set to: %s", s->h, config.tzn)
         conf_save = true;
     }
 
     if (conf_save) {
         save_flash_config();
     }
-
+    
+    cw_pack_map_size(&s->pc_resp, 3);
     cw_pack_cstr(&s->pc_resp, "tz"); cw_pack_cstr(&s->pc_resp, config.tz);
     cw_pack_cstr(&s->pc_resp, "tn"); cw_pack_cstr(&s->pc_resp, config.tzn);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
@@ -996,7 +999,7 @@ static int process_cmd_frame(session_t *s) {
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    uint8_t *start = upc.item.as.bin.start;
+    const uint8_t *start = upc.item.as.bin.start;
     size_t sz = upc.item.as.bin.length;
     if (crypto_box_open_easy_afternm(s->rx_buffer, //Overwrite rx_buffer
             start,
@@ -1008,7 +1011,7 @@ static int process_cmd_frame(session_t *s) {
         goto exitfn;
     }
     s->rx_buffer_len = sz - crypto_box_MACBYTES;
-    inc_nonce(s->nonce)
+    inc_nonce(s->nonce);
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     r = msgpack_map_search(&upc, "t");
@@ -1018,12 +1021,13 @@ static int process_cmd_frame(session_t *s) {
         goto exitfn;
     }
     cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR)) {
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
         ESP_LOGE("CMD", "[%d] Entry \"t\" isn't string type", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     msgpack_cstr(&upc, cmd_str, sizeof(cmd_str));
+    ESP_LOGI("CMD","[%d] Command: %s", s->h, cmd_str);
 
     // [q] command (QUIT)
     if(strcmp(cmd_str, "q") == 0) { // Quit
@@ -1032,13 +1036,11 @@ static int process_cmd_frame(session_t *s) {
             s->ota_lock = false;
             ota_lock = false;
         }
-        ret = 0;
         goto exitok;
     }
 
     // [n] command (NOP)
     if(strcmp(cmd_str, "n") == 0) { // Nop
-        ret = 0;
         goto exitok;
     }
 
@@ -1062,7 +1064,6 @@ static int process_cmd_frame(session_t *s) {
  */
     if(chk_cmd_access(s, cmd_str) != 0) {
         err = ERR_PERMISSION_DENIED;
-        ret = 0;
         goto exitfn;
     }
 
@@ -1079,7 +1080,6 @@ static int process_cmd_frame(session_t *s) {
         } else {
             ESP_LOGE("CMD", "[%d] actuator %d out of range", s->h, n);
         }
-        ret = 0;
         goto exitok;
     }
 
@@ -1089,26 +1089,26 @@ static int process_cmd_frame(session_t *s) {
         goto exitfn;
     }
 
-    resp_error(json_resp, ERR_UNKNOWN_COMMAND);
-    ret = 0;
+    err = ERR_UNKNOWN_COMMAND;
     goto exitfn;
 
 exitok:
-    cJSON_AddStringToObject(json_resp, "r", "ok");
+    ret = 0;
+    err = 0;
+    cw_pack_map_size(&s->pc_resp, 1);
+    cw_pack_cstr(&s->pc_resp, "r"); cw_pack_cstr(&s->pc_resp, "ok");
+
 exitfn:
-    if(sl != NULL) {
-        str_list_free(sl);
+    if (ret > 0) {
+        return ret;
     }
-    if(json_cmd != NULL) {
-        cJSON_Delete(json_cmd);
+    if (err > 0) {
+        cw_pack_map_size(&s->pc_resp, 2);
+        cw_pack_cstr(&s->pc_resp, "e"); cw_pack_signed(&s->pc_resp, err);
+        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
+        ESP_LOGE("CMD", "[%d] command error: (%d) %s", s->h, err, err2str(err));
     }
-    if(json_resp != NULL) {
-        if(respond(conn, json_resp, false, true) != 0) {
-            ESP_LOGE("LOGIN", "[%d] Fail sending response", conn);
-            ret = 1;
-        }
-        cJSON_Delete(json_resp);
-    }
+    encrypt_response(s, "rc");
     return ret;
 }
  
@@ -1220,11 +1220,13 @@ exitfn:
         if(s->conn_timeout > 5){
             s->conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
         }
+        s->blocked = true;
         if (ret > 0) {
             cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
             cw_pack_map_size(&s->pc_tx, 2);
             cw_pack_cstr(&s->pc_tx, "e"); cw_pack_signed(&s->pc_tx, ret);
             cw_pack_cstr(&s->pc_tx, "d"); cw_pack_cstr(&s->pc_tx, err2str(ret));
+            ESP_LOGE(LOG_TAG, "[%d] Frame error: (%d) %s", s->h, ret, err2str(ret));
         }
     } else {
         s->conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
@@ -1239,6 +1241,10 @@ static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
     
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     if(!s->connected) {
+        retval = 1;
+        goto exitfn;
+    }
+    if(s->blocked) {
         retval = 1;
         goto exitfn;
     }

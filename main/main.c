@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 1
+#define FW_VER 2
 #define LOG_TAG "MAIN"
 
 #include <inttypes.h>
@@ -35,6 +35,12 @@
 #include "boards.h"
 #include "hwrtc.h"
 
+// Magic info
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+
+    static const char magic[] = "vkfwmark:" HW_BOARD "," STR(FW_VER);
+//
 
 // Boards config
 static int const act_tout[] = ACTUATORS_TOUT;
@@ -687,7 +693,6 @@ exitfn:
     return ret;
 }
 
-
 static int do_cmd_ts(session_t *s){
     int ret = 0;
     struct timeval tv={0};
@@ -793,11 +798,6 @@ static int do_cmd_fi(session_t *s){
     int r = msgpack_map_search(&upc, "fu");
     if(r) {
         err = ERR_PERMISSION_DENIED;
-        goto exitfn_fail;
-    }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_MAP) {
-        err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
     back_upc = upc;
@@ -1478,6 +1478,7 @@ void app_main(void) {
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
+    ESP_LOGI(LOG_TAG, "Magic str: %s", magic);
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();

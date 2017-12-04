@@ -153,7 +153,7 @@ typedef struct ota_s {
     bool start;
     bool ota_end;
     uint32_t started_update;
-    char sha256sum[64];
+    uint8_t sha256sum[32];
     mbedtls_sha256_context sha256_ctx;
     esp_ota_handle_t handle;
     const esp_partition_t *part;
@@ -765,92 +765,125 @@ static void reset_ota() {
     memset(&ota, 0, sizeof(ota));
 }
 
-/* static int do_cmd_fs(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON_AddBoolToObject(json_resp, "lock", ota_lock);
-    cJSON_AddBoolToObject(json_resp, "start", ota.start);
-    cJSON_AddStringToObject(json_resp,"hash", ota.sha256sum);
-    cJSON_AddStringToObject(json_resp,"board", HW_BOARD);
-    cJSON_AddNumberToObject(json_resp,"update", ota.started_update);
-    cJSON_AddNumberToObject(json_resp,"run_update", FW_VER);
-    cJSON_AddNumberToObject(json_resp,"size", ota.size);
-    cJSON_AddNumberToObject(json_resp,"offset", ota.offset);
+static int do_cmd_fs(session_t *s){
+    cw_pack_map_size(&s->pc_resp, 8);
+    cw_pack_cstr(&s->pc_resp, "lo"); cw_pack_boolean(&s->pc_resp, ota_lock);
+    cw_pack_cstr(&s->pc_resp, "st"); cw_pack_boolean(&s->pc_resp, ota.start);
+    cw_pack_cstr(&s->pc_resp, "ha"); cw_pack_bin(&s->pc_resp, ota.sha256sum, sizeof(ota.sha256sum));
+    cw_pack_cstr(&s->pc_resp, "bo"); cw_pack_cstr(&s->pc_resp, HW_BOARD);
+    cw_pack_cstr(&s->pc_resp, "uv"); cw_pack_unsigned(&s->pc_resp, ota.started_update);
+    cw_pack_cstr(&s->pc_resp, "rv"); cw_pack_unsigned(&s->pc_resp, FW_VER);
+    cw_pack_cstr(&s->pc_resp, "sz"); cw_pack_unsigned(&s->pc_resp, ota.size);
+    cw_pack_cstr(&s->pc_resp, "of"); cw_pack_unsigned(&s->pc_resp, ota.offset);
     return 0;
 }
- */
-/* static int do_cmd_fi(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON* json_item = NULL;
-    cJSON* cfg_item = NULL;
-    int ret = 0;
+
+static int do_cmd_fi(session_t *s){
+    int err = 0;
+    cw_unpack_context upc, back_upc;
 
     if (ota_lock) {
-        resp_error(json_resp, ERR_FLASH_LOCKED);
-        ret = 0;
+        err= ERR_FLASH_LOCKED;
         goto exitfn_fail;
     }
     ota_lock = true;
-    session[conn].ota_lock = true;
+    s->ota_lock = true;
 
-    cfg_item = cJSON_GetObjectItem(session[conn].login_obj, "fu");
-    if(cfg_item == NULL) {
-        resp_error(json_resp, ERR_PERMISSION_DENIED);
-        ret = 0;
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, "fu");
+    if(r) {
+        err = ERR_PERMISSION_DENIED;
         goto exitfn_fail;
     }
-
-
-    json_item = cJSON_GetObjectItem(cfg_item, "v");
-    if(json_item == NULL || !(json_item->type & cJSON_Number)) {
-        resp_error(json_resp, ERR_INVALID_PARAMS);
-        ret = 1;
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_MAP) {
+        err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    uint32_t update = json_item->valueint;
+    back_upc = upc;
 
-    json_item = cJSON_GetObjectItem(cfg_item, "h");
-    if(json_item == NULL || !(json_item->type & cJSON_String)) {
-        resp_error(json_resp, ERR_INVALID_PARAMS);
-        ret = 1;
+    r = msgpack_map_search(&upc, "uv");
+    if(r) {
+        ESP_LOGE("CMD", "[%d] \"uv\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    char *hash = json_item->valuestring;
-
-    json_item = cJSON_GetObjectItem(cfg_item, "b");
-    if(json_item == NULL || !(json_item->type & cJSON_String)) {
-        resp_error(json_resp, ERR_INVALID_PARAMS);
-        ret = 1;
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("CMD", "[%d] \"uv\" is not positive integer", s->h);
+        err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    char *board = json_item->valuestring;
+    uint32_t update = upc.item.as.u64;
 
-    json_item = cJSON_GetObjectItem(cfg_item, "s");
-    if(json_item == NULL || !(json_item->type & cJSON_Number)) {
-        resp_error(json_resp, ERR_INVALID_PARAMS);
-        ret = 1;
+    upc = back_upc;
+    r = msgpack_map_search(&upc, "ha");
+    if(r) {
+        ESP_LOGE("CMD", "[%d] \"ha\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    size_t size = json_item->valueint;
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
+        ESP_LOGE("CMD", "[%d] \"ha\" is not binary array type", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    if (upc.item.as.bin.length != sizeof(ota.sha256sum)) { 
+        ESP_LOGE("CMD", "[%d] \"ha\" hash length missmatch", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    const uint8_t *hash = upc.item.as.bin.start;
 
+    upc = back_upc;
+    r = msgpack_map_search(&upc, "bo");
+    if(r) {
+        ESP_LOGE("CMD", "[%d] \"bo\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+        ESP_LOGE("CMD", "[%d] \"bo\" is not string type", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    char board[64];
+    msgpack_cstr(&upc, board, sizeof(board));
+
+    upc = back_upc;
+    r = msgpack_map_search(&upc, "sz");
+    if(r) {
+        ESP_LOGE("CMD", "[%d] \"sz\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("CMD", "[%d] \"sz\" is not positive integer", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    size_t size = upc.item.as.u64;
 
     if (update <= FW_VER) {
-        resp_error(json_resp, ERR_FLASH_OUTDATED);
-        ret = 0;
+        err = ERR_FLASH_OUTDATED;
         goto exitfn_fail;
     }
 
     if (strcmp(board, HW_BOARD) != 0) {
-        resp_error(json_resp, ERR_FLASH_BOARD);
-        ret = 0;
+        err = ERR_FLASH_BOARD;
         goto exitfn_fail;
     }
 
     if (ota.start) {
         if (update < ota.started_update) {
-            resp_error(json_resp, ERR_FLASH_OUTDATED);
-            ret = 0;
+            err = ERR_FLASH_OUTDATED;
             goto exitfn_fail;
         }
 
-        if (update > ota.started_update || strcmp(hash, ota.sha256sum) != 0) {
+        if (update > ota.started_update || ota.size != size || memcmp(hash, ota.sha256sum, sizeof(ota.sha256sum)) != 0) {
             reset_ota();
         }
     }
@@ -858,128 +891,104 @@ static void reset_ota() {
     // Prepare OTA
     if (!ota.start){ 
         reset_ota();
-        strncpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
+        memcpy(ota.sha256sum, hash, sizeof(ota.sha256sum));
         ota.offset = 0;
         ota.started_update = update;
         ota.size = size;
         ota.part = esp_ota_get_next_update_partition(NULL);
         if (ota.part == NULL) {
-            resp_error(json_resp, ERR_FLASH_PARTERROR);
-            ret = 0;
+            err = ERR_FLASH_PARTERROR;
             goto exitfn_fail;
         }
         if (esp_ota_begin(ota.part, ota.size, &ota.handle) != ESP_OK) {
-            resp_error(json_resp, ERR_FLASH_PARTERROR);
-            ret = 0;
+            err = ERR_FLASH_PARTERROR;
             goto exitfn_fail;
         }
         mbedtls_sha256_init(&ota.sha256_ctx);
         mbedtls_sha256_starts(&ota.sha256_ctx, 0);
         ota.start = true;
     }
-    return do_cmd_fs(conn, json_cmd, json_resp);
+    return do_cmd_fs(s);
 exitfn_fail:
     ota_lock = false;
-    session[conn].ota_lock = false;
-    return ret;
+    s->ota_lock = false;
+    return err;
 }
- */
-/* static int do_cmd_fw(uint16_t conn, cJSON* json_cmd, cJSON* json_resp){
-    cJSON* json_item = NULL;
-    size_t olen = 0;
-    int ret = 0;
-    uint8_t *buffer = NULL;
 
-    if (!session[conn].ota_lock){
-        ret = 0;
-        resp_error(json_resp, ERR_FLASH_NOTOWNED);
+static int do_cmd_fw(session_t *s){
+    int err = 0;
+    cw_unpack_context upc;
+
+    if (!s->ota_lock){
+        err = ERR_FLASH_NOTOWNED;
         goto exitfn;
     }
 
     if (!ota.start) {
-        ret = 0;
-        resp_error(json_resp, ERR_FLASH_OTAINIT);
+        err =  ERR_FLASH_OTAINIT;
         goto exitfn;
     }
 
-    json_item = cJSON_GetObjectItem(json_cmd, "data");
-    if(json_item == NULL || !(json_item->type & cJSON_String)) {
-        ret = 1;
-        resp_error(json_resp, ERR_INVALID_PARAMS);
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    int r = msgpack_map_search(&upc, "d");
+    if (r) {
+        ESP_LOGE("CMD", "[%d] \"d\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
+        ESP_LOGE("CMD", "[%d] \"d\" is not bin/str type", s->h);
+        err = ERR_INVALID_PARAMS;
         goto exitfn;
     }
 
-    if(mbedtls_base64_decode(NULL, 0, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ret = 1;
-        resp_error(json_resp, ERR_INVALID_PARAMS);
-        goto exitfn;
-    }
-
-    buffer = malloc(olen);
-    if (buffer == NULL) {
-        ret = 1;
-        resp_error(json_resp, ERR_INTERNAL);
-        goto exitfn;
-    }
-
-    if(mbedtls_base64_decode(buffer, olen, &olen, (uint8_t*)json_item->valuestring, strlen(json_item->valuestring)) != 0) {
-        ret = 1;
-        resp_error(json_resp, ERR_INTERNAL);
-        goto exitfn;
-    }
-    if (esp_ota_write(ota.handle, buffer, olen) != ESP_OK) {
-        ret = 0;
-        resp_error(json_resp, ERR_FLASH_PARTERROR);
+    if (esp_ota_write(ota.handle, upc.item.as.bin.start, upc.item.as.bin.length) != ESP_OK) {
+        err = ERR_FLASH_PARTERROR;
         reset_ota();
         goto exitfn;
     }
-    mbedtls_sha256_update(&ota.sha256_ctx, buffer, olen);
-    ota.offset += olen;
+    mbedtls_sha256_update(&ota.sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    ota.offset += upc.item.as.bin.length;
 
     if (ota.offset > ota.size) {
-        ret = 1;
-        resp_error(json_resp, ERR_FLASH_OVERRUN);
+        err = ERR_FLASH_OVERRUN;
         reset_ota();
         goto exitfn;
     }
 
     if (ota.offset == ota.size) {
         uint8_t chk_calc[32] = {0};
-        uint8_t chk_ota[32] = {0};
         mbedtls_sha256_finish(&ota.sha256_ctx, chk_calc);
-        mbedtls_base64_decode(chk_ota, sizeof(chk_ota), &olen, (uint8_t *)ota.sha256sum, strlen(ota.sha256sum));
-        if(memcmp(chk_calc, chk_ota, sizeof(chk_calc)) == 0) {
+        if(memcmp(chk_calc, ota.sha256sum, sizeof(chk_calc)) == 0) {
             ota.ota_end = true;
-            esp_err_t err = esp_ota_end(ota.handle);
-            if (err != ESP_OK) {
-                resp_error(json_resp, ERR_FLASH_CHECKSUM);
+            esp_err_t esp_err = esp_ota_end(ota.handle);
+            if (esp_err != ESP_OK) {
+                err = ERR_FLASH_CHECKSUM;
                 reset_ota();
                 goto exitfn;
             }    
-            err = esp_ota_set_boot_partition(ota.part);
-            if (err != ESP_OK) {
-                resp_error(json_resp, ERR_FLASH_BOOT);
+            esp_err = esp_ota_set_boot_partition(ota.part);
+            if (esp_err != ESP_OK) {
+                err = ERR_FLASH_BOOT;
                 reset_ota();
                 goto exitfn;
             }
             reset_ota();
             reset_tm = 10;
         } else {
-            resp_error(json_resp, ERR_FLASH_CHECKSUM);
+            err = ERR_FLASH_CHECKSUM;
             reset_ota();
             goto exitfn;
         }
     }
 
-    cJSON_AddNumberToObject(json_resp, "offset", ota.offset);
-    goto exitfn;
+    cw_pack_map_size(&s->pc_resp, 1);
+    cw_pack_cstr(&s->pc_resp, "of"); cw_pack_unsigned(&s->pc_resp, ota.offset);
+
 exitfn:
-    if (buffer != NULL) {
-        free(buffer);
-    }
-    return ret;
+    return err;
 }
- */
 
 static int process_cmd_frame(session_t *s) {
     int ret = 0, err = 0;
@@ -1044,24 +1053,24 @@ static int process_cmd_frame(session_t *s) {
         goto exitok;
     }
 
-/*     // [fs] flash get state
+    // [fs] flash get state
     if (strcmp(cmd_str, "fs") == 0){
-        ret = do_cmd_fs(conn, json_cmd, json_resp);
+        err = do_cmd_fs(s);
         goto exitfn;
     }
 
     // [fi] flash init
     if (strcmp(cmd_str, "fi") == 0){
-        ret = do_cmd_fi(conn, json_cmd, json_resp);
+        err = do_cmd_fi(s);
         goto exitfn;
     }
 
     // [fw] flash write
     if (strcmp(cmd_str, "fw") == 0){
-        ret = do_cmd_fw(conn, json_cmd, json_resp);
+        err = do_cmd_fw(s);
         goto exitfn;
     }
- */
+
     if(chk_cmd_access(s, cmd_str) != 0) {
         err = ERR_PERMISSION_DENIED;
         goto exitfn;

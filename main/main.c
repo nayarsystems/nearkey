@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 2
+#define FW_VER 3
 #define LOG_TAG "MAIN"
 
 #include <inttypes.h>
@@ -195,6 +195,7 @@ static uint32_t reset_button_tm;
 // --- End Reset button timer
 
 // Function declarations
+static int reset_flash_config(bool);
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static void clear_session(session_t *s);
@@ -1176,6 +1177,13 @@ static int disconnect_cb(uint16_t conn) {
 }
 
 static int process_info_frame(session_t *s){
+    int ret = 0;
+
+    if (!is_configured()){
+        reset_flash_config(true);
+        ret = -1;
+        reset_tm = 10;
+    }
     cw_pack_map_size(&s->pc_tx, 10);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
     cw_pack_cstr(&s->pc_tx, "id"); cw_pack_bin(&s->pc_tx, config.vk_id, 6);
@@ -1187,7 +1195,7 @@ static int process_info_frame(session_t *s){
     cw_pack_cstr(&s->pc_tx, "tz"); cw_pack_cstr(&s->pc_tx, config.tz);
     cw_pack_cstr(&s->pc_tx, "tn"); cw_pack_cstr(&s->pc_tx, config.tzn);
     cw_pack_cstr(&s->pc_tx, "ts"); cw_pack_unsigned(&s->pc_tx, time(NULL));
-    return 0;
+    return ret;
 }
 
 static int cmd_cb(session_t *s) {
@@ -1286,7 +1294,6 @@ exitfn:
 }
 
 static esp_err_t init_flash() {
-
     esp_err_t err = nvs_flash_init();
     if(err == ESP_ERR_NVS_NO_FREE_PAGES) {
         // NVS partition was truncated and needs to be erased
@@ -1324,17 +1331,20 @@ exitfn:
     return err;
 }
 
-static esp_err_t reset_flash_config() {
+static esp_err_t reset_flash_config(bool format) {
     size_t olen = 0;
 
-    ESP_LOGI(LOG_TAG, "Reseting flash config...");
-    // Reset main config
-    memset(&config, 0, sizeof(config));
-    strcpy(config.tz, "CET-1CEST,M3.5.0,M10.5.0/3");
-    strcpy(config.tzn, "Europe/Madrid");
-    crypto_box_keypair(config.public_key, config.secret_key);
-    randombytes_buf(config.vk_id, sizeof(config.vk_id));
-    mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
+    memset(&config, 0, sizeof(config)); 
+    if (format) {
+        ESP_LOGI(LOG_TAG, "Formating new config values...");
+        strcpy(config.tz, "CET-1CEST,M3.5.0,M10.5.0/3");
+        strcpy(config.tzn, "Europe/Madrid");
+        crypto_box_keypair(config.public_key, config.secret_key);
+        randombytes_buf(config.vk_id, sizeof(config.vk_id));
+        mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
+    } else {
+        ESP_LOGI(LOG_TAG, "Cleaning config values (factory reset)...");
+    }
     return save_flash_config();
 }
 
@@ -1350,8 +1360,8 @@ static esp_err_t load_flash_config() {
     err = nvs_get_blob(nvs_config_h, "config", NULL, &size); // Get blob size
     if(err != ESP_OK) {
         if(err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(LOG_TAG, "config not found, creating new one");
-            err = reset_flash_config();
+            ESP_LOGW(LOG_TAG, "Config not found, creating new one");
+            err = reset_flash_config(false);
             if(err != ESP_OK) {
                 goto exitfn;
             }
@@ -1560,8 +1570,14 @@ void app_main(void) {
             reset_tm--;
             if(!reset_tm) {
                 if(erase_on_reset) {
-                    reset_flash_config();
+                    reset_flash_config(false);
                 }
+                for (int conn = 0; conn < CONFIG_BT_ACL_CONNECTIONS; conn ++){
+                    if(session[conn].connected){
+                        gatts_close_connection(conn, session[conn].gatts_if);
+                    }
+                }
+                vTaskDelay(200 / portTICK_PERIOD_MS);
                 reboot();
             }
         }

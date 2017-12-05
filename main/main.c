@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 3
+#define FW_VER 6
 #define LOG_TAG "MAIN"
 
 #include <inttypes.h>
@@ -1184,12 +1184,13 @@ static int process_info_frame(session_t *s){
         ret = -1;
         reset_tm = 10;
     }
-    cw_pack_map_size(&s->pc_tx, 10);
+    cw_pack_map_size(&s->pc_tx, 11);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
     cw_pack_cstr(&s->pc_tx, "id"); cw_pack_bin(&s->pc_tx, config.vk_id, 6);
     cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&s->pc_tx, "capk"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&s->pc_tx, "fv"); cw_pack_unsigned(&s->pc_tx, FW_VER);
+    cw_pack_cstr(&s->pc_tx, "kv"); cw_pack_unsigned(&s->pc_tx, config.key_ver);
     cw_pack_cstr(&s->pc_tx, "bo"); cw_pack_cstr(&s->pc_tx, HW_BOARD);
     cw_pack_cstr(&s->pc_tx, "ac"); cw_pack_unsigned(&s->pc_tx, MAX_ACTUATORS);
     cw_pack_cstr(&s->pc_tx, "tz"); cw_pack_cstr(&s->pc_tx, config.tz);
@@ -1488,7 +1489,7 @@ void app_main(void) {
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
-    ESP_LOGI(LOG_TAG, "Magic str: %s", magic);
+    printf("Magic str: %s", magic);
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();

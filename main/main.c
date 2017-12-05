@@ -38,8 +38,7 @@
 // Magic info
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
-
-    static const char magic[] = "vkfwmark:" HW_BOARD "," STR(FW_VER);
+static const char magic[] = "vkfwmark:" HW_BOARD "," STR(FW_VER);
 //
 
 // Boards config
@@ -1460,7 +1459,6 @@ static void setup_gpio() {
 #endif
 }
 
-
 static void set_status_led(int st) {
 #if STATUS_LED_GPIO >= 0
     gpio_set_level(STATUS_LED_GPIO, st);
@@ -1482,7 +1480,6 @@ static int get_reset_button() {
     return 1
 #endif
 }
-
 
 void app_main(void) {
     char chbuf[65];
@@ -1583,7 +1580,7 @@ void app_main(void) {
             }
         }
         // --- End Reset Timer
-
+        
         xSemaphoreGive(session_sem);
     }
 }

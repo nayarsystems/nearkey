@@ -1489,7 +1489,7 @@ void app_main(void) {
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
-    printf("Magic str: %s", magic);
+    printf("Magic str: %s\n", magic);
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();

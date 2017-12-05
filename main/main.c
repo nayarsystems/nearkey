@@ -1424,7 +1424,6 @@ static void setup_gpio() {
     // configure GPIO with the given settings
     gpio_config(&io_conf);
 
-    
     if (RESET_BUTTON_GPIO >= 0){
         io_conf = (gpio_config_t){0};
         // disable interrupt
@@ -1486,7 +1485,7 @@ void app_main(void) {
     bool status_led = false;
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
-    printf("Magic str: %s\n", magic);
+    printf("Magic:\"%s\"\n", magic);
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();
@@ -1580,7 +1579,7 @@ void app_main(void) {
             }
         }
         // --- End Reset Timer
-        
+
         xSemaphoreGive(session_sem);
     }
 }

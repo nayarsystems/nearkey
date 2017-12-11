@@ -38,7 +38,7 @@
 // Magic info
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
-static const char magic[] = "vkfwmark:" HW_BOARD "," STR(FW_VER);
+static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"fv\":" STR(FW_VER) "}";
 //
 
 // Boards config

@@ -144,7 +144,6 @@ typedef struct session_s {
     size_t login_len;
     uint8_t address[6];
     int conn_timeout;
-    bool out_time;
     bool connected;
     bool blocked;
     bool login;
@@ -336,7 +335,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
     char str_buf[32];
     cw_unpack_context upc;
 
-    if (s->out_time) { // On clock failure allow only "ts" command
+    if (!chk_time()) { // On clock failure allow only "ts" command
         if(strcmp(cmd, "ts") == 0) {
             ret = 0;
             goto exitfn;
@@ -667,7 +666,6 @@ static int process_login_frame(session_t *s) {
             goto exitfn;
         }
     } else {
-        s->out_time = true;
         ESP_LOGE("LOGIN", "[%d] clock out of time. Only \"ts\" command allowed", s->h);
     }
 

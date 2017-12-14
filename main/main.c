@@ -197,6 +197,8 @@ static int reset_flash_config(bool);
 static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static void clear_session(session_t *s);
+static int chk_expiration(session_t *s);
+static int chk_time_res(session_t *s, const char *field, bool nreq);
 // --- End Function definitions
 
 
@@ -216,6 +218,7 @@ static void clear_session(session_t *s);
     }
     *dst = 0;
 }*/
+
 
 static const char *err2str(int code) {
     for (int idx =0; errors[idx].code != -1; idx++) {
@@ -271,6 +274,13 @@ static char *nctime_r(const time_t *timep, char *buf){
     size_t l = strlen(buf);
     if (l > 0) buf[l-1] = 0; // Remove nasty LF 
     return ret;
+}
+
+void print_current_time(void) {
+    char chbuf[64];
+    
+    time_t now = time(NULL);
+    ESP_LOGI(LOG_TAG, "Current time: %s", nctime_r(&now, chbuf));
 }
 
 static bool chk_time() {
@@ -331,48 +341,61 @@ static int cmp_perm(const char *perm, const char *cmd){
 }
 
 static int chk_cmd_access(session_t *s, const char* cmd) {
-    int ret = 0;
+    int err = 0;
     char str_buf[32];
     cw_unpack_context upc;
 
     if (!chk_time()) { // On clock failure allow only "ts" command
         if(strcmp(cmd, "ts") == 0) {
-            ret = 0;
+            err = 0;
             goto exitfn;
         }
-        ret = 1;
+        err = ERR_PERMISSION_DENIED;
         goto exitfn;
+    } else {
+        if (chk_expiration(s) != 0) {
+            err = ERR_KEY_EXPIRED;
+            goto exitfn;
+        }
+        if (chk_time_res(s, "y", true) != 0 ){
+            err = ERR_TIME_RESTRICTION;
+            goto exitfn;
+        }
+
+        if (chk_time_res(s, "z", false) == 0 ){
+            err = ERR_TIME_RESTRICTION;
+            goto exitfn;
+        }
     }
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = msgpack_map_search(&upc, "a");
     if (r){
         ESP_LOGE("CMD", "[%d] There isn't command access list, all commands denied by default", s->h);
-        ret = 1;
+        err = ERR_INTERNAL;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
         ESP_LOGE("CMD", "[%d] Access list isn't array type", s->h);
-        ret = 1;
+        err = ERR_INTERNAL;
         goto exitfn;
     }
     for(int i = upc.item.as.array.size; i > 0; i--) {
         cw_unpack_next(&upc);
         if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
             ESP_LOGE("CMD", "[%d] Access entry isn't string type", s->h);
-            ret = 1;
+            err = ERR_INTERNAL;
             goto exitfn;
         }
         msgpack_cstr(&upc, str_buf, sizeof(str_buf));
         if (cmp_perm(str_buf, cmd) == 0) {
-            ret = 0;
             goto exitfn;
         }
     }
-    ret = 1;
+    err = ERR_PERMISSION_DENIED;
 exitfn:
-    return ret;
+    return err;
 }
  
 
@@ -656,19 +679,9 @@ static int process_login_frame(session_t *s) {
             err = ERR_KEY_EXPIRED;
             goto exitfn;
         }
-        if (chk_time_res(s, "y", true) != 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
-        }
-
-        if (chk_time_res(s, "z", false) == 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
-        }
     } else {
         ESP_LOGE("LOGIN", "[%d] clock out of time. Only \"ts\" command allowed", s->h);
     }
-
 
     s->login = true;
     cw_pack_map_size(&s->pc_resp, 4);
@@ -710,6 +723,7 @@ static int do_cmd_ts(session_t *s){
         tv.tv_sec = (time_t) upc.item.as.u64;
         settimeofday(&tv, NULL);
         ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, upc.item.as.u64)
+
 #ifdef RTC_DRIVER
         systohc();
 #endif
@@ -753,7 +767,7 @@ static int do_cmd_ts(session_t *s){
     cw_pack_cstr(&s->pc_resp, "tz"); cw_pack_cstr(&s->pc_resp, config.tz);
     cw_pack_cstr(&s->pc_resp, "tn"); cw_pack_cstr(&s->pc_resp, config.tzn);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
-
+    print_current_time(); 
 exitfn:
     return ret;
 }
@@ -1069,8 +1083,8 @@ static int process_cmd_frame(session_t *s) {
         goto exitfn;
     }
 
-    if(chk_cmd_access(s, cmd_str) != 0) {
-        err = ERR_PERMISSION_DENIED;
+    err = chk_cmd_access(s, cmd_str);
+    if (err != 0) {
         goto exitfn;
     }
 
@@ -1494,8 +1508,7 @@ void app_main(void) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");
     }
 #endif
-    time_t now = time(NULL);
-    ESP_LOGI(LOG_TAG, "Current time: %s", nctime_r(&now, chbuf));
+    print_current_time(); 
 
     bin2b64(config.vk_id, sizeof(config.vk_id), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "virkey ID: %s", chbuf);

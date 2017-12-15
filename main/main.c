@@ -109,7 +109,7 @@ static struct config_s {
     uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
     uint64_t key_ver;
-    uint64_t egg_ver; 
+    uint64_t egg_cnt; 
     char tz[64];
     char tzn[64];
 } __attribute__((packed)) config;
@@ -119,7 +119,7 @@ static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
 
 // Session stuff
-#define DEF_SIGNATURE_SIZE 32
+#define EGG_OVERHEAD crypto_box_NONCEBYTES + crypto_box_MACBYTES
 #define RX_BUFFER_SIZE 2048
 #define TX_BUFFER_SIZE 1024
 #define RESP_BUFFER_SIZE TX_BUFFER_SIZE - 32
@@ -284,7 +284,7 @@ void print_current_time(void) {
 }
 
 static bool chk_time() {
-    return time(NULL) > 1483225200; // check if date is greater than 2017/01/01 00:00:00
+    return time(NULL) > 1483225200L; // check if date is greater than 2017/01/01 00:00:00
 }
 
 static void reboot(){
@@ -525,6 +525,54 @@ static int chk_expiration(session_t *s) {
         goto exitfn;
     }
 exitfn:
+    return ret;
+}
+
+static int append_egg(session_t *s, cw_pack_context *out) {
+    int ret = 0;
+    cw_pack_context pc;
+    uint8_t *blob = malloc(1024 + EGG_OVERHEAD);
+    
+    if (blob == NULL) {
+        ret = -1;
+        goto exitfn;
+    }
+    size_t map_size = 10;
+    if (ota.start) {
+        map_size += 5;
+    }
+    cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 1024, NULL);
+    cw_pack_map_size(&pc, map_size);
+    cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "egg_cli");
+    cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
+    cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
+    cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
+    cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
+    cw_pack_cstr(&pc, "ac"); cw_pack_unsigned(&pc, MAX_ACTUATORS);
+    cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz);
+    cw_pack_cstr(&pc, "tn"); cw_pack_cstr(&pc, config.tzn);
+    cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
+    cw_pack_cstr(&pc, "ec"); cw_pack_unsigned(&pc, config.egg_cnt);
+    if (ota.start) {
+        cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
+        cw_pack_cstr(&pc, "ha"); cw_pack_bin(&pc, ota.sha256sum, sizeof(ota.sha256sum));
+        cw_pack_cstr(&pc, "uv"); cw_pack_unsigned(&pc, ota.started_update);
+        cw_pack_cstr(&pc, "sz"); cw_pack_unsigned(&pc, ota.size);
+        cw_pack_cstr(&pc, "of"); cw_pack_unsigned(&pc, ota.offset);
+    }
+
+    size_t mlen = pc.current - pc.start;
+    randombytes_buf(blob, crypto_box_NONCEBYTES);
+    memcpy(blob, config.vk_id, sizeof(config.vk_id)); // First 6 bytes must be virkey ID
+    crypto_box_easy_afternm(&blob[crypto_box_NONCEBYTES], &blob[EGG_OVERHEAD], mlen, blob, ca_shared);
+
+    cw_pack_cstr(out, "egg");
+    cw_pack_bin(out, blob, mlen + EGG_OVERHEAD);
+
+    exitfn:
+    if (blob != NULL) {
+        free(blob);
+    }
     return ret;
 }
 
@@ -1057,7 +1105,9 @@ static int process_cmd_frame(session_t *s) {
             s->ota_lock = false;
             ota_lock = false;
         }
-        goto exitok;
+        cw_pack_map_size(&s->pc_resp, 1);
+        append_egg(s, &s->pc_resp);
+        goto exitfn;
     }
 
     // [n] command (NOP)
@@ -1195,7 +1245,7 @@ static int process_info_frame(session_t *s){
         ret = -1;
         reset_tm = 10;
     }
-    cw_pack_map_size(&s->pc_tx, 11);
+    cw_pack_map_size(&s->pc_tx, 12);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
     cw_pack_cstr(&s->pc_tx, "id"); cw_pack_bin(&s->pc_tx, config.vk_id, 6);
     cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
@@ -1207,6 +1257,7 @@ static int process_info_frame(session_t *s){
     cw_pack_cstr(&s->pc_tx, "tz"); cw_pack_cstr(&s->pc_tx, config.tz);
     cw_pack_cstr(&s->pc_tx, "tn"); cw_pack_cstr(&s->pc_tx, config.tzn);
     cw_pack_cstr(&s->pc_tx, "ts"); cw_pack_unsigned(&s->pc_tx, time(NULL));
+    append_egg(s, &s->pc_tx);
     return ret;
 }
 

@@ -1257,7 +1257,7 @@ static int process_info_frame(session_t *s){
     cw_pack_map_size(&s->pc_tx, 4);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
     cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(&s->pc_tx, "capk"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&s->pc_tx, "ca"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
     append_egg(s, &s->pc_tx);
     return ret;
 }

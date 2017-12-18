@@ -1,5 +1,6 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
 #define FW_VER 6
+#define PRODUCT "VK"
 #define LOG_TAG "MAIN"
 
 #include <inttypes.h>
@@ -109,7 +110,7 @@ static struct config_s {
     uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
     uint64_t key_ver;
-    uint64_t egg_cnt; 
+    uint32_t boot_cnt; 
     char tz[64];
     char tzn[64];
 } __attribute__((packed)) config;
@@ -177,6 +178,16 @@ typedef struct time_res_s {
     uint32_t ran[10];
 } __attribute__((packed)) time_res_t;
 // --- End Time restrictions 
+
+// Egg stuff
+typedef struct egg_header_s {
+    uint8_t id[6];
+    uint32_t boot_cnt;
+    uint32_t egg_cnt;
+    uint8_t padding[10];
+} __attribute__((packed)) egg_header_t;
+static uint32_t egg_cnt;
+// --- End Egg stuff
 
 // Actuator timers
 static int32_t act_timers[MAX_ACTUATORS];
@@ -537,22 +548,20 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         ret = -1;
         goto exitfn;
     }
-    size_t map_size = 10;
+    size_t map_size = 8;
     if (ota.start) {
         map_size += 5;
     }
     cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 1024, NULL);
     cw_pack_map_size(&pc, map_size);
-    cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "egg_cli");
-    cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
+    cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "sta");
     cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
-    cw_pack_cstr(&pc, "ac"); cw_pack_unsigned(&pc, MAX_ACTUATORS);
+    cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
     cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz);
     cw_pack_cstr(&pc, "tn"); cw_pack_cstr(&pc, config.tzn);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
-    cw_pack_cstr(&pc, "ec"); cw_pack_unsigned(&pc, config.egg_cnt);
     if (ota.start) {
         cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
         cw_pack_cstr(&pc, "ha"); cw_pack_bin(&pc, ota.sha256sum, sizeof(ota.sha256sum));
@@ -560,10 +569,12 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         cw_pack_cstr(&pc, "sz"); cw_pack_unsigned(&pc, ota.size);
         cw_pack_cstr(&pc, "of"); cw_pack_unsigned(&pc, ota.offset);
     }
-
     size_t mlen = pc.current - pc.start;
-    randombytes_buf(blob, crypto_box_NONCEBYTES);
-    memcpy(blob, config.vk_id, sizeof(config.vk_id)); // First 6 bytes must be virkey ID
+    egg_header_t *h = (egg_header_t *)blob;
+    memcpy(&h->id, config.vk_id, sizeof(h->id));
+    h->boot_cnt = config.boot_cnt;
+    h->egg_cnt = ++egg_cnt;
+    randombytes_buf(&h->padding, sizeof(h->padding));
     crypto_box_easy_afternm(&blob[crypto_box_NONCEBYTES], &blob[EGG_OVERHEAD], mlen, blob, ca_shared);
 
     cw_pack_cstr(out, "egg");
@@ -1105,9 +1116,7 @@ static int process_cmd_frame(session_t *s) {
             s->ota_lock = false;
             ota_lock = false;
         }
-        cw_pack_map_size(&s->pc_resp, 1);
-        append_egg(s, &s->pc_resp);
-        goto exitfn;
+        goto exitok;
     }
 
     // [n] command (NOP)
@@ -1245,18 +1254,10 @@ static int process_info_frame(session_t *s){
         ret = -1;
         reset_tm = 10;
     }
-    cw_pack_map_size(&s->pc_tx, 12);
+    cw_pack_map_size(&s->pc_tx, 4);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
-    cw_pack_cstr(&s->pc_tx, "id"); cw_pack_bin(&s->pc_tx, config.vk_id, 6);
     cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&s->pc_tx, "capk"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(&s->pc_tx, "fv"); cw_pack_unsigned(&s->pc_tx, FW_VER);
-    cw_pack_cstr(&s->pc_tx, "kv"); cw_pack_unsigned(&s->pc_tx, config.key_ver);
-    cw_pack_cstr(&s->pc_tx, "bo"); cw_pack_cstr(&s->pc_tx, HW_BOARD);
-    cw_pack_cstr(&s->pc_tx, "ac"); cw_pack_unsigned(&s->pc_tx, MAX_ACTUATORS);
-    cw_pack_cstr(&s->pc_tx, "tz"); cw_pack_cstr(&s->pc_tx, config.tz);
-    cw_pack_cstr(&s->pc_tx, "tn"); cw_pack_cstr(&s->pc_tx, config.tzn);
-    cw_pack_cstr(&s->pc_tx, "ts"); cw_pack_unsigned(&s->pc_tx, time(NULL));
     append_egg(s, &s->pc_tx);
     return ret;
 }
@@ -1360,8 +1361,7 @@ static esp_err_t init_flash() {
     esp_err_t err = nvs_flash_init();
     if(err == ESP_ERR_NVS_NO_FREE_PAGES) {
         // NVS partition was truncated and needs to be erased
-        const esp_partition_t* nvs_partition =
-            esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, NULL);
+        const esp_partition_t* nvs_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, NULL);
         assert(nvs_partition && "partition table must have an NVS partition");
         ESP_ERROR_CHECK(esp_partition_erase_range(nvs_partition, 0, nvs_partition->size));
         // Retry nvs_flash_init
@@ -1554,13 +1554,15 @@ void app_main(void) {
     setup_gpio();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
+    config.boot_cnt ++;
+    ESP_ERROR_CHECK(save_flash_config());
 #ifdef RTC_DRIVER    
     if (hctosys() != 0) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");
     }
 #endif
+    ESP_LOGI(LOG_TAG, "Boot counter: %u", config.boot_cnt);
     print_current_time(); 
-
     bin2b64(config.vk_id, sizeof(config.vk_id), chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "virkey ID: %s", chbuf);
     bin2b64(config.public_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));

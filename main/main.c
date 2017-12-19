@@ -572,8 +572,14 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     size_t mlen = pc.current - pc.start;
     egg_header_t *h = (egg_header_t *)blob;
     memcpy(&h->id, config.vk_id, sizeof(h->id));
+    egg_cnt++;
+    if (egg_cnt == 0) { // egg_cnt overflow
+        config.boot_cnt++;
+        egg_cnt = 1;
+        ESP_ERROR_CHECK(save_flash_config());
+    }
     h->boot_cnt = config.boot_cnt;
-    h->egg_cnt = ++egg_cnt;
+    h->egg_cnt = egg_cnt;
     randombytes_buf(&h->padding, sizeof(h->padding));
     crypto_box_easy_afternm(&blob[crypto_box_NONCEBYTES], &blob[EGG_OVERHEAD], mlen, blob, ca_shared);
 

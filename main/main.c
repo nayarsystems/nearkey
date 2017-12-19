@@ -1405,6 +1405,9 @@ static esp_err_t reset_flash_config(bool format) {
         crypto_box_keypair(config.public_key, config.secret_key);
         randombytes_buf(config.vk_id, sizeof(config.vk_id));
         mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
+        if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
+            ESP_LOGE(LOG_TAG, "Error computing ca shared key");
+        }
     } else {
         ESP_LOGI(LOG_TAG, "Cleaning config values (factory reset)...");
     }
@@ -1453,11 +1456,9 @@ static esp_err_t load_flash_config() {
     ESP_LOGI(LOG_TAG, "Timezone:%s", config.tz);
     setenv("TZ", config.tz, 1);
     tzset();
-    ESP_LOGI(LOG_TAG, "Computing CA shared key...");
     if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
         ESP_LOGE(LOG_TAG, "Error computing ca shared key");
     }
-    ESP_LOGI(LOG_TAG, "Shared key computed");
     err = ESP_OK;
 exitfn:
     return err;

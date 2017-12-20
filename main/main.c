@@ -1,6 +1,6 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 7
-#define PRODUCT "VK"
+#define FW_VER 8
+#define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
 #include <inttypes.h>
@@ -39,7 +39,7 @@
 // Magic info
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
-static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"fv\":" STR(FW_VER) "}";
+static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRODUCT "\",\"fv\":" STR(FW_VER) "}";
 //
 
 // Boards config
@@ -65,10 +65,11 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_FLASH_CHECKSUM 14
 #define ERR_FLASH_BOOT 15
 #define ERR_FLASH_BOARD 16
-#define ERR_FRAME_UNKNOWN 17
-#define ERR_FRAME_INVALID 18
-#define ERR_APP_ERROR 19
-#define ERR_CRYPTO_SIGNATURE 20
+#define ERR_FLASH_PRODUCT 17
+#define ERR_FRAME_UNKNOWN 18
+#define ERR_FRAME_INVALID 19
+#define ERR_APP_ERROR 20
+#define ERR_CRYPTO_SIGNATURE 21
 
 typedef struct _code {
     int code;
@@ -92,6 +93,7 @@ static CODE errors[] = {
     {ERR_FLASH_CHECKSUM, "Flash checksum fail"},
     {ERR_FLASH_BOOT, "Error setting boot partition"},
     {ERR_FLASH_BOARD, "Incompatible board firmware"},
+    {ERR_FLASH_PRODUCT, "Incompatible product firmware"},
     {ERR_FRAME_UNKNOWN, "Unknown frame type"},
     {ERR_FRAME_INVALID, "Invalid frame data"},
     {ERR_APP_ERROR, "Application level error"},
@@ -936,6 +938,23 @@ static int do_cmd_fi(session_t *s){
     msgpack_cstr(&upc, board, sizeof(board));
 
     upc = back_upc;
+    r = msgpack_map_search(&upc, "pr");
+    if(r) {
+        ESP_LOGE("CMD", "[%d] \"pr\" entry not pressent", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+        ESP_LOGE("CMD", "[%d] \"pr\" is not string type", s->h);
+        err = ERR_INVALID_PARAMS;
+        goto exitfn_fail;
+    }
+    char product[64];
+    msgpack_cstr(&upc, board, sizeof(board));
+
+
+    upc = back_upc;
     r = msgpack_map_search(&upc, "sz");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"sz\" entry not pressent", s->h);
@@ -957,6 +976,11 @@ static int do_cmd_fi(session_t *s){
 
     if (strcmp(board, HW_BOARD) != 0) {
         err = ERR_FLASH_BOARD;
+        goto exitfn_fail;
+    }
+
+    if (strcmp(product, PRODUCT) != 0) {
+        err = ERR_FLASH_PRODUCT;
         goto exitfn_fail;
     }
 

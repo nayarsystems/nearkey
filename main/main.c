@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 6
+#define FW_VER 7
 #define PRODUCT "VK"
 #define LOG_TAG "MAIN"
 
@@ -803,11 +803,14 @@ static int do_cmd_ts(session_t *s){
             ret = ERR_INVALID_PARAMS;
             goto exitfn;
         }
-        strlcpy(config.tz, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tz));
-        setenv("TZ", config.tz, 1);
-        tzset();
-        ESP_LOGI("CMD", "[%d] Time zone posix string set to: %s", s->h, config.tz)
-        conf_save = true;
+        msgpack_cstr(&upc, str, sizeof(str));
+        if (strcmp(config.tz, str) != 0){
+            strlcpy(config.tz, str, sizeof(config.tz));
+            setenv("TZ", config.tz, 1);
+            tzset();
+            ESP_LOGI("CMD", "[%d] Time zone posix string set to: %s", s->h, config.tz)
+            conf_save = true;
+        }
     }
 
     msgpack_restore(&upc);
@@ -819,9 +822,12 @@ static int do_cmd_ts(session_t *s){
             ret = ERR_INVALID_PARAMS;
             goto exitfn;
         }
-        strlcpy(config.tzn, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tzn));
-        ESP_LOGI("CMD", "[%d] Time zone name string set to: %s", s->h, config.tzn)
-        conf_save = true;
+        msgpack_cstr(&upc, str, sizeof(str));
+        if (strcmp(config.tzn, str) != 0){
+            strlcpy(config.tzn, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tzn));
+            ESP_LOGI("CMD", "[%d] Time zone name string set to: %s", s->h, config.tzn)
+            conf_save = true;
+        }
     }
 
     if (conf_save) {

@@ -1394,9 +1394,7 @@ exitfn:
 }
 
 static esp_err_t init_flash() {
-    ESP_LOGI(LOG_TAG, "Before nvs init");
     esp_err_t err = nvs_flash_init();
-    ESP_LOGI(LOG_TAG, "After nvs init");
     if(err == ESP_ERR_NVS_NO_FREE_PAGES) {
         // NVS partition was truncated and needs to be erased
         const esp_partition_t* nvs_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, NULL);
@@ -1416,13 +1414,11 @@ static esp_err_t save_flash_config() {
     esp_err_t err = ESP_OK;
 
     config.cfg_version = FW_VER;
-    ESP_LOGI(LOG_TAG, "Before nvs write");
     err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config));
     if(err != ESP_OK) {
         goto exitfn;
     }
     err = nvs_commit(nvs_config_h);
-    ESP_LOGI(LOG_TAG, "After nvs init");
     if(err != ESP_OK)
         goto exitfn;
     ESP_LOGI(LOG_TAG, "Config written to flash!");
@@ -1457,17 +1453,13 @@ static esp_err_t reset_flash_config(bool format) {
 static esp_err_t load_flash_config() {
     esp_err_t err = ESP_OK;
     
-    ESP_LOGI(LOG_TAG, "Before nvs_open");
     err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
-    ESP_LOGI(LOG_TAG, "After nvs_open");
     if(err != ESP_OK) {
         ESP_LOGE(LOG_TAG, "Error (%d) opening nvs config handle", err);
         goto exitfn;
     }
     size_t size;
-    ESP_LOGI(LOG_TAG, "Before nvs read config");
     err = nvs_get_blob(nvs_config_h, "config", NULL, &size); // Get blob size
-    ESP_LOGI(LOG_TAG, "After nvs read config");
     if(err != ESP_OK) {
         if(err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(LOG_TAG, "Config not found, creating new one");

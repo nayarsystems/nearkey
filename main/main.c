@@ -123,6 +123,7 @@ static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 
 // Session stuff
 #define EGG_OVERHEAD crypto_box_NONCEBYTES + crypto_box_MACBYTES
+#define SEED_SIZE 16
 #define RX_BUFFER_SIZE 2048
 #define TX_BUFFER_SIZE 1024
 #define RESP_BUFFER_SIZE TX_BUFFER_SIZE - 32
@@ -135,8 +136,9 @@ typedef struct session_s {
     uint16_t gatts_if;
     uint32_t key_version;
     uint8_t shared_key[crypto_box_BEFORENMBYTES];
-    uint8_t nonce[crypto_box_NONCEBYTES];
-    uint8_t rnonce[crypto_box_NONCEBYTES];
+    uint8_t seed[SEED_SIZE];
+    uint8_t nonce[32];
+    uint8_t rnonce[32];
     size_t rx_buffer_len;
     uint8_t *rx_buffer;
     uint8_t *tx_buffer;
@@ -324,15 +326,22 @@ static void inc_nonce(uint8_t *nonce) {
     }
 }
 
-static void encrypt_response(session_t *s, const char *t) {
+static void encrypt_response(session_t *s, const char *t, bool seed) {
     size_t sz = s->pc_resp.current - s->pc_resp.start;
     uint8_t *enc_data = malloc(sz + crypto_box_MACBYTES);
 
     crypto_box_easy_afternm(enc_data, s->pc_resp.start, sz, s->rnonce, s->shared_key);
     inc_nonce(s->rnonce);
-    cw_pack_map_size(&s->pc_tx, 2);
+    if (seed) {
+        cw_pack_map_size(&s->pc_tx, 3);    
+    } else {
+        cw_pack_map_size(&s->pc_tx, 2);    
+    }
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, t);
     cw_pack_cstr(&s->pc_tx, "d"); cw_pack_bin(&s->pc_tx, enc_data, sz + crypto_box_MACBYTES);
+    if (seed) {
+        cw_pack_cstr(&s->pc_tx, "n"); cw_pack_bin(&s->pc_tx, s->seed, SEED_SIZE);
+    }
     free(enc_data);
     return;
 }
@@ -632,23 +641,38 @@ static int process_login_frame(session_t *s) {
     msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "n");
     if (r){
-        ESP_LOGE("LOGIN", "[%d] Error obtaining nonce: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] Error obtaining nonce seed: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for nonce", s->h);
+        ESP_LOGE("LOGIN", "[%d] Invalid type for nonce seed", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if ( upc.item.as.bin.length != crypto_box_NONCEBYTES) {
-        ESP_LOGE("LOGIN", "[%d] Invalid nonce size", s->h);
+    if ( upc.item.as.bin.length < 16) {
+        ESP_LOGE("LOGIN", "[%d] Invalid nonce seed size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    memcpy(s->rnonce, upc.item.as.bin.start, upc.item.as.bin.length);
-    randombytes_buf(s->nonce, crypto_box_NONCEBYTES);
+    // calc nonces
+    randombytes_buf(s->seed, SEED_SIZE);
+    mbedtls_sha256_context sha256_ctx;
+
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
+    mbedtls_sha256_finish(&sha256_ctx, s->rnonce);
+    mbedtls_sha256_free(&sha256_ctx);
+
+    mbedtls_sha256_init(&sha256_ctx);
+    mbedtls_sha256_starts(&sha256_ctx, 0);
+    mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
+    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_finish(&sha256_ctx, s->nonce);
+    mbedtls_sha256_free(&sha256_ctx);
 
     // Process Login data
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
@@ -751,8 +775,7 @@ static int process_login_frame(session_t *s) {
     }
 
     s->login = true;
-    cw_pack_map_size(&s->pc_resp, 4);
-    cw_pack_cstr(&s->pc_resp, "n"); cw_pack_bin(&s->pc_resp, s->nonce, sizeof(s->nonce));
+    cw_pack_map_size(&s->pc_resp, 3);
     cw_pack_cstr(&s->pc_resp, "fv"); cw_pack_unsigned(&s->pc_resp, FW_VER);
     cw_pack_cstr(&s->pc_resp, "bo"); cw_pack_cstr(&s->pc_resp, HW_BOARD);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
@@ -767,7 +790,7 @@ exitfn:
         cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
         ESP_LOGE("LOGIN", "[%d] Login error: (%d) %s", s->h, err, err2str(err));
     }
-    encrypt_response(s, "rl");
+    encrypt_response(s, "rl", true);
     return ret;
 }
 
@@ -1224,7 +1247,7 @@ exitfn:
         cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
         ESP_LOGE("CMD", "[%d] command error: (%d) %s", s->h, err, err2str(err));
     }
-    encrypt_response(s, "rc");
+    encrypt_response(s, "rc", false);
     return ret;
 }
  

@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 10
+#define FW_VER 11
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -49,27 +49,33 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 // --- End Boards config
 
 // Errors
-#define ERR_INTERNAL 1
-#define ERR_OLD_KEY_VERSION 2
-#define ERR_PERMISSION_DENIED 3
-#define ERR_UNKNOWN_COMMAND 4
-#define ERR_INVALID_PARAMS 5
-#define ERR_KEY_EXPIRED 6
-#define ERR_TIME_RESTRICTION 7
-#define ERR_FLASH_LOCKED 8
-#define ERR_FLASH_NOTOWNED 9
-#define ERR_FLASH_OTAINIT 10
-#define ERR_FLASH_OUTDATED 11
-#define ERR_FLASH_PARTERROR 12
-#define ERR_FLASH_OVERRUN 13
-#define ERR_FLASH_CHECKSUM 14
-#define ERR_FLASH_BOOT 15
-#define ERR_FLASH_BOARD 16
-#define ERR_FLASH_PRODUCT 17
-#define ERR_FRAME_UNKNOWN 18
-#define ERR_FRAME_INVALID 19
-#define ERR_APP_ERROR 20
-#define ERR_CRYPTO_SIGNATURE 21
+#define ERR_INTERNAL            1
+#define ERR_APP_ERROR           2
+
+#define ERR_FRAME_UNKNOWN       100
+#define ERR_FRAME_INVALID       101
+#define ERR_CRYPTO_SIGNATURE    102
+
+#define ERR_OLD_KEY_VERSION     200
+#define ERR_PERMISSION_DENIED   201
+#define ERR_KEY_EXPIRED         202
+#define ERR_TIME_RESTRICTION    203
+
+#define ERR_UNKNOWN_COMMAND     300
+#define ERR_INVALID_PARAMS      301
+#define ERR_NOT_LOGGED          302 
+
+#define ERR_FLASH_LOCKED        900
+#define ERR_FLASH_NOTOWNED      901
+#define ERR_FLASH_OTAINIT       902
+#define ERR_FLASH_OUTDATED      903
+#define ERR_FLASH_PARTERROR     904
+#define ERR_FLASH_OVERRUN       905
+#define ERR_FLASH_CHECKSUM      906
+#define ERR_FLASH_BOOT          907
+#define ERR_FLASH_BOARD         908
+#define ERR_FLASH_PRODUCT       909
+
 
 typedef struct _code {
     int code;
@@ -78,6 +84,10 @@ typedef struct _code {
 
 static CODE errors[] = {
     {ERR_INTERNAL, "Internal error"},
+    {ERR_APP_ERROR, "Application level error"},
+    {ERR_FRAME_UNKNOWN, "Unknown frame type"},
+    {ERR_FRAME_INVALID, "Invalid frame data"},
+    {ERR_CRYPTO_SIGNATURE, "Invalid signature"},
     {ERR_OLD_KEY_VERSION , "Old Key version"},
     {ERR_PERMISSION_DENIED, "Permission denied"},
     {ERR_UNKNOWN_COMMAND, "Unknown command"},
@@ -94,10 +104,6 @@ static CODE errors[] = {
     {ERR_FLASH_BOOT, "Error setting boot partition"},
     {ERR_FLASH_BOARD, "Incompatible board firmware"},
     {ERR_FLASH_PRODUCT, "Incompatible product firmware"},
-    {ERR_FRAME_UNKNOWN, "Unknown frame type"},
-    {ERR_FRAME_INVALID, "Invalid frame data"},
-    {ERR_APP_ERROR, "Application level error"},
-    {ERR_CRYPTO_SIGNATURE, "Invalid signature"},
     {-1, NULL},
 };
 
@@ -1124,6 +1130,12 @@ static int process_cmd_frame(session_t *s) {
     int ret = 0, err = 0;
     cw_unpack_context upc;
     char cmd_str[32];
+
+    if (!s->login) {
+        ESP_LOGE("CMD", "[%d] Received command on not logged connection", s->h);
+        ret = ERR_NOT_LOGGED;
+        goto exitfn;
+    }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     int r = msgpack_map_search(&upc, "d");

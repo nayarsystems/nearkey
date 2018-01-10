@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 11
+#define FW_VER 14
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -903,7 +903,7 @@ static int do_cmd_fi(session_t *s){
 
     if (ota_lock) {
         err= ERR_FLASH_LOCKED;
-        goto exitfn_fail;
+        goto exitfn_locked;
     }
     ota_lock = true;
     s->ota_lock = true;
@@ -1048,6 +1048,7 @@ static int do_cmd_fi(session_t *s){
 exitfn_fail:
     ota_lock = false;
     s->ota_lock = false;
+exitfn_locked:
     return err;
 }
 

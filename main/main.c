@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 14
+#define FW_VER 15
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -109,8 +109,39 @@ static CODE errors[] = {
 
 // --- End Errors
 
-// Config stuff
+// Log stuff
+#define LOG_SIZE 20
+#define LOG_FIELDS 6
 
+#define LOG_OP_BOOT      1
+#define LOG_OP_TIME_SET  10
+#define LOG_OP_FW_INIT   20
+#define LOG_OP_FW_END    21
+#define LOG_OP_ACTUATOR  100
+
+static CODE log_ops[] = {
+    {LOG_OP_BOOT, "Boot"},
+    {LOG_OP_TIME_SET, "Time set"},
+    {LOG_OP_FW_INIT, "Firmware flash init"},
+    {LOG_OP_FW_END, "Firmware flash end"},
+    {LOG_OP_ACTUATOR, "Shot actuator"},
+    {-1, NULL},
+};
+
+typedef struct log_s {
+    uint32_t cnt;
+    int32_t usr;
+    int32_t ts;
+    int32_t op;
+    int32_t par;
+    int32_t res;
+} log_t;
+static int32_t log_cnt;
+static int32_t log_idx;
+static log_t log[LOG_SIZE];
+// -- End Log stuff
+
+// Config stuff
 static struct config_s {
     uint32_t cfg_version;
     uint8_t public_key[crypto_box_PUBLICKEYBYTES];
@@ -140,6 +171,7 @@ typedef struct session_s {
     uint16_t h;
     time_t creation_ts;
     uint16_t gatts_if;
+    int32_t  user;
     uint32_t key_version;
     uint8_t shared_key[crypto_box_BEFORENMBYTES];
     uint8_t seed[SEED_SIZE];
@@ -241,10 +273,10 @@ static int chk_time_res(session_t *s, const char *field, bool nreq);
 }*/
 
 
-static const char *err2str(int code) {
-    for (int idx =0; errors[idx].code != -1; idx++) {
-        if (errors[idx].code == code){
-            return errors[idx].desc;
+static const char *code2str(CODE *map, int code) {
+    for (int idx =0; map[idx].code != -1; idx++) {
+        if (map[idx].code == code){
+            return map[idx].desc;
         }
     }
     return "";
@@ -315,6 +347,29 @@ static void reboot(){
 static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     mbedtls_base64_encode((uint8_t*)dst, dst_sz, &dst_sz, buf, sz);
     dst[dst_sz] = 0;
+}
+
+static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
+    int32_t usr = -1;
+    int32_t sh = -1; 
+    int32_t now = time(NULL);
+
+    if (s != NULL) {
+        usr = s->user;
+        sh = s->h;
+    }
+    log_cnt++;
+    log[log_idx].cnt = log_cnt;
+    log[log_idx].usr = usr;
+    log[log_idx].ts =  now;
+    log[log_idx].op = op;
+    log[log_idx].par = par;
+    log[log_idx].res = res;
+    log_idx++;
+    if (log_idx >= LOG_SIZE) {
+        log_idx = 0;
+    }
+    ESP_LOGI("LOGGER","[%d] cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d", sh, log_cnt, usr, now, op, code2str(log_ops, op), par, res);
 }
 
 static int respond(session_t *s) {
@@ -701,6 +756,22 @@ static int process_login_frame(session_t *s) {
     }
 
     msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "u");
+    if (r) {
+        ESP_LOGE("LOGIN", "[%d] \"u\" field not present: %d", s->h, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER && upc.item.type != CWP_ITEM_NEGATIVE_INTEGER)) {
+        ESP_LOGE("LOGIN", "[%d] Invalid \"u\" field type", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    s->user = upc.item.as.i64;
+    ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
+    
+    msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "uk");
     if (r){
         ESP_LOGE("LOGIN", "[%d] \"uk\" field not present: %d", s->h, r);
@@ -793,8 +864,8 @@ exitfn:
     if (err > 0) {
         cw_pack_map_size(&s->pc_resp, 2);
         cw_pack_cstr(&s->pc_resp, "e"); cw_pack_signed(&s->pc_resp, err);
-        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
-        ESP_LOGE("LOGIN", "[%d] Login error: (%d) %s", s->h, err, err2str(err));
+        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, code2str(errors, err));
+        ESP_LOGE("LOGIN", "[%d] Login error: (%d) %s", s->h, err, code2str(errors, err));
     }
     encrypt_response(s, "rl", true);
     return ret;
@@ -899,6 +970,7 @@ static int do_cmd_fs(session_t *s){
 
 static int do_cmd_fi(session_t *s){
     int err = 0;
+    uint32_t update = 0;
     cw_unpack_context upc, back_upc;
 
     if (ota_lock) {
@@ -928,7 +1000,7 @@ static int do_cmd_fi(session_t *s){
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    uint32_t update = upc.item.as.u64;
+    update = upc.item.as.u64;
 
     upc = back_upc;
     r = msgpack_map_search(&upc, "ha");
@@ -981,7 +1053,6 @@ static int do_cmd_fi(session_t *s){
     }
     char product[64];
     msgpack_cstr(&upc, product, sizeof(product));
-
 
     upc = back_upc;
     r = msgpack_map_search(&upc, "sz");
@@ -1044,16 +1115,19 @@ static int do_cmd_fi(session_t *s){
         mbedtls_sha256_starts(&ota.sha256_ctx, 0);
         ota.start = true;
     }
+    log_add(s, LOG_OP_FW_INIT, update, 0);
     return do_cmd_fs(s);
 exitfn_fail:
     ota_lock = false;
     s->ota_lock = false;
 exitfn_locked:
+    log_add(s, LOG_OP_FW_INIT, update, err);
     return err;
 }
 
 static int do_cmd_fw(session_t *s){
     int err = 0;
+    uint32_t update = ota.started_update;
     cw_unpack_context upc;
 
     if (!s->ota_lock){
@@ -1111,6 +1185,7 @@ static int do_cmd_fw(session_t *s){
                 reset_ota();
                 goto exitfn;
             }
+            log_add(s, LOG_OP_FW_END, update, 0);
             reset_ota();
             reset_tm = 10;
         } else {
@@ -1124,6 +1199,9 @@ static int do_cmd_fw(session_t *s){
     cw_pack_cstr(&s->pc_resp, "of"); cw_pack_unsigned(&s->pc_resp, ota.offset);
 
 exitfn:
+    if (err != 0) {
+        log_add(s, LOG_OP_FW_END, update, err);
+    }
     return err;
 }
 
@@ -1229,6 +1307,7 @@ static int process_cmd_frame(session_t *s) {
                 act_timers[n] = act_tout[n];
             }
             ESP_LOGI("CMD", "[%d] shoting actuator %d", s->h, n);
+            log_add(s, LOG_OP_ACTUATOR, n, 0);
         } else {
             ESP_LOGE("CMD", "[%d] actuator %d out of range", s->h, n);
         }
@@ -1238,6 +1317,7 @@ static int process_cmd_frame(session_t *s) {
     // [ts] command (TIME SET/GET)
     if (strcmp(cmd_str, "ts") == 0){
         ret = do_cmd_ts(s);
+        log_add(s, LOG_OP_TIME_SET, 0, ret);
         goto exitfn;
     }
 
@@ -1257,8 +1337,8 @@ exitfn:
     if (err > 0) {
         cw_pack_map_size(&s->pc_resp, 2);
         cw_pack_cstr(&s->pc_resp, "e"); cw_pack_signed(&s->pc_resp, err);
-        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, err2str(err));
-        ESP_LOGE("CMD", "[%d] command error: (%d) %s", s->h, err, err2str(err));
+        cw_pack_cstr(&s->pc_resp, "d"); cw_pack_cstr(&s->pc_resp, code2str(errors, err));
+        ESP_LOGE("CMD", "[%d] command error: (%d) %s", s->h, err, code2str(errors, err));
     }
     encrypt_response(s, "rc", false);
     return ret;
@@ -1378,8 +1458,8 @@ exitfn:
             cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
             cw_pack_map_size(&s->pc_tx, 2);
             cw_pack_cstr(&s->pc_tx, "e"); cw_pack_signed(&s->pc_tx, ret);
-            cw_pack_cstr(&s->pc_tx, "d"); cw_pack_cstr(&s->pc_tx, err2str(ret));
-            ESP_LOGE(LOG_TAG, "[%d] Frame error: (%d) %s", s->h, ret, err2str(ret));
+            cw_pack_cstr(&s->pc_tx, "d"); cw_pack_cstr(&s->pc_tx, code2str(errors, ret));
+            ESP_LOGE(LOG_TAG, "[%d] Frame error: (%d) %s", s->h, ret, code2str(errors, ret));
         }
     } else {
         s->conn_timeout = DEF_CONN_TIMEOUT; // Reload timeout on command success 
@@ -1634,6 +1714,7 @@ void app_main(void) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");
     }
 #endif
+    log_add(NULL, LOG_OP_BOOT, config.boot_cnt, 0);
     ESP_LOGI(LOG_TAG, "Boot counter: %u", config.boot_cnt);
     print_current_time(); 
     bin2b64(config.vk_id, sizeof(config.vk_id), chbuf, sizeof(chbuf));

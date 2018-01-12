@@ -620,7 +620,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         ret = -1;
         goto exitfn;
     }
-    size_t map_size = 8;
+    size_t map_size = 9; 
     if (ota.start) {
         map_size += 5;
     }
@@ -634,6 +634,16 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz);
     cw_pack_cstr(&pc, "tn"); cw_pack_cstr(&pc, config.tzn);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
+    cw_pack_cstr(&pc, "lg"); cw_pack_array_size(&pc, LOG_SIZE);
+    for(int n = 0; n < LOG_SIZE; n++) {
+        cw_pack_array_size(&pc, LOG_FIELDS);
+        cw_pack_unsigned(&pc, log[n].cnt);
+        cw_pack_signed(&pc, log[n].usr);
+        cw_pack_signed(&pc, log[n].ts);
+        cw_pack_signed(&pc, log[n].op);
+        cw_pack_signed(&pc, log[n].par);
+        cw_pack_signed(&pc, log[n].res);
+    }
     if (ota.start) {
         cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
         cw_pack_cstr(&pc, "ha"); cw_pack_bin(&pc, ota.sha256sum, sizeof(ota.sha256sum));
@@ -641,6 +651,8 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         cw_pack_cstr(&pc, "sz"); cw_pack_unsigned(&pc, ota.size);
         cw_pack_cstr(&pc, "of"); cw_pack_unsigned(&pc, ota.offset);
     }
+
+
     size_t mlen = pc.current - pc.start;
     egg_header_t *h = (egg_header_t *)blob;
     memcpy(&h->id, config.vk_id, sizeof(h->id));

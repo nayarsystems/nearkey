@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 16
+#define FW_VER 17
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -143,18 +143,17 @@ static log_t log[LOG_SIZE];
 
 // Config stuff
 static struct config_s {
-    uint32_t cfg_version;
+    uint32_t fw_ver;
+    uint32_t boot_cnt; 
+    uint64_t key_ver;
     uint8_t public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t secret_key[crypto_box_SECRETKEYBYTES];
     uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
-    uint64_t key_ver;
-    uint32_t boot_cnt; 
-    char tz[64];
-    char tzn[64];
-} __attribute__((packed)) config;
+} config;
 
 static nvs_handle nvs_config_h;
+static uint8_t cfg_buf[512];
 static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
 
@@ -333,7 +332,7 @@ void print_current_time(void) {
     char chbuf[64];
     
     time_t now = time(NULL);
-    ESP_LOGI(LOG_TAG, "Current time: %s", nctime_r(&now, chbuf));
+    ESP_LOGI(LOG_TAG, "Current time (UTC): %s", nctime_r(&now, chbuf));
 }
 
 static bool chk_time() {
@@ -620,7 +619,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         ret = -1;
         goto exitfn;
     }
-    size_t map_size = 9; 
+    size_t map_size = 7; 
     if (ota.start) {
         map_size += 5;
     }
@@ -631,8 +630,6 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
-    cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz);
-    cw_pack_cstr(&pc, "tn"); cw_pack_cstr(&pc, config.tzn);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
     cw_pack_cstr(&pc, "lg"); cw_pack_array_size(&pc, LOG_SIZE);
     for(int n = 0; n < LOG_SIZE; n++) {
@@ -886,8 +883,6 @@ exitfn:
 static int do_cmd_ts(session_t *s){
     int ret = 0;
     struct timeval tv={0};
-    bool conf_save = false;
-    char str[64];
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
@@ -908,49 +903,7 @@ static int do_cmd_ts(session_t *s){
 #endif
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "tz");
-    if (r == 0) {
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-            ESP_LOGE("CMD", "[%d] Entry \"tz\" isn't string type", s->h);
-            ret = ERR_INVALID_PARAMS;
-            goto exitfn;
-        }
-        msgpack_cstr(&upc, str, sizeof(str));
-        if (strcmp(config.tz, str) != 0){
-            strlcpy(config.tz, str, sizeof(config.tz));
-            setenv("TZ", config.tz, 1);
-            tzset();
-            ESP_LOGI("CMD", "[%d] Time zone posix string set to: %s", s->h, config.tz)
-            conf_save = true;
-        }
-    }
-
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "tzn");
-    if (r == 0) {
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-            ESP_LOGE("CMD", "[%d] Entry \"tzn\" isn't string type", s->h);
-            ret = ERR_INVALID_PARAMS;
-            goto exitfn;
-        }
-        msgpack_cstr(&upc, str, sizeof(str));
-        if (strcmp(config.tzn, str) != 0){
-            strlcpy(config.tzn, msgpack_cstr(&upc, str, sizeof(str)), sizeof(config.tzn));
-            ESP_LOGI("CMD", "[%d] Time zone name string set to: %s", s->h, config.tzn)
-            conf_save = true;
-        }
-    }
-
-    if (conf_save) {
-        save_flash_config();
-    }
-    
-    cw_pack_map_size(&s->pc_resp, 3);
-    cw_pack_cstr(&s->pc_resp, "tz"); cw_pack_cstr(&s->pc_resp, config.tz);
-    cw_pack_cstr(&s->pc_resp, "tn"); cw_pack_cstr(&s->pc_resp, config.tzn);
+    cw_pack_map_size(&s->pc_resp, 1);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
     print_current_time(); 
 exitfn:
@@ -1540,9 +1493,21 @@ fail:
 
 static esp_err_t save_flash_config() {
     esp_err_t err = ESP_OK;
+    cw_pack_context pc;
 
-    config.cfg_version = FW_VER;
-    err = nvs_set_blob(nvs_config_h, "config", &config, sizeof(config));
+    config.fw_ver = FW_VER;
+    // Translate config struct to msgpack
+    cw_pack_context_init(&pc, cfg_buf, sizeof(cfg_buf), NULL);
+    cw_pack_map_size(&pc, 7);
+    cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, config.fw_ver);
+    cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
+    cw_pack_cstr(&pc, "bc"); cw_pack_unsigned(&pc, config.boot_cnt);
+    cw_pack_cstr(&pc, "sk"); cw_pack_bin(&pc, config.secret_key, crypto_box_SECRETKEYBYTES);
+    cw_pack_cstr(&pc, "pk"); cw_pack_bin(&pc, config.public_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&pc, "ca"); cw_pack_bin(&pc, config.ca_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
+
+    err = nvs_set_blob(nvs_config_h, "config", cfg_buf, sizeof(cfg_buf));
     if(err != ESP_OK) {
         goto exitfn;
     }
@@ -1564,8 +1529,6 @@ static esp_err_t reset_flash_config(bool format) {
     memset(&config, 0, sizeof(config)); 
     if (format) {
         ESP_LOGI(LOG_TAG, "Formating new config values...");
-        strcpy(config.tz, "CET-1CEST,M3.5.0,M10.5.0/3");
-        strcpy(config.tzn, "Europe/Madrid");
         crypto_box_keypair(config.public_key, config.secret_key);
         randombytes_buf(config.vk_id, sizeof(config.vk_id));
         mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
@@ -1580,6 +1543,7 @@ static esp_err_t reset_flash_config(bool format) {
 
 static esp_err_t load_flash_config() {
     esp_err_t err = ESP_OK;
+    cw_unpack_context upc;
     
     err = nvs_open("virkey", NVS_READWRITE, &nvs_config_h);
     if(err != ESP_OK) {
@@ -1605,21 +1569,112 @@ static esp_err_t load_flash_config() {
             goto exitfn;
         }
     }
-    if(size != sizeof(config)) {
+    if(size != sizeof(cfg_buf)) {
         ESP_LOGW(LOG_TAG, "Config size mismatch!")
         if(size > sizeof(config)) {
             size = sizeof(config);
         }
     }
-    err = nvs_get_blob(nvs_config_h, "config", &config, &size); // Get blob size
+    err = nvs_get_blob(nvs_config_h, "config", cfg_buf, &size); // Get blob size
     if(err != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Error (%d) reading config!", err)
+        ESP_LOGE(LOG_TAG, "Error (%d) reading config!", err);
         goto exitfn;
     }
+    // Translate from msgpack to config struct
+    cw_unpack_context_init(&upc, cfg_buf, sizeof(cfg_buf), NULL);
+    int r;
+    r = msgpack_map_search(&upc, "fv");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
+            config.fw_ver = upc.item.as.u64;
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"fv\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"fv\" field not found");
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "kv");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
+            config.key_ver = upc.item.as.u64;
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"kv\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"kv\" field not found");
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "bc");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
+            config.boot_cnt = upc.item.as.u64;
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"bc\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"bc\" field not found");
+    }
+
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "sk");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
+            memcpy(config.secret_key, upc.item.as.bin.start, sizeof(config.secret_key));
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"sk\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"sk\" field not found");
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "pk");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
+            memcpy(config.public_key, upc.item.as.bin.start, sizeof(config.public_key));
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"pk\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"pk\" field not found");
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "ca");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
+            memcpy(config.ca_key, upc.item.as.bin.start, sizeof(config.ca_key));
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"ca\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"ca\" field not found");
+    }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "id");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
+            memcpy(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id));
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"id\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"id\" field not found");
+    }
+
     ESP_LOGI(LOG_TAG, "Config loaded")
-    ESP_LOGI(LOG_TAG, "Timezone:%s", config.tz);
-    setenv("TZ", config.tz, 1);
-    tzset();
     if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
         ESP_LOGE(LOG_TAG, "Error computing ca shared key");
     }
@@ -1714,6 +1769,8 @@ void app_main(void) {
     
     ESP_LOGI(LOG_TAG, "Starting virkey...");
     printf("Magic:\"%s\"\n", magic);
+    setenv("TZ", "UTC0", 1);
+    tzset();
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     setup_gpio();

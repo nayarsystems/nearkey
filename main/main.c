@@ -110,8 +110,7 @@ static CODE errors[] = {
 // --- End Errors
 
 // Log stuff
-#define LOG_SIZE 20
-#define LOG_FIELDS 6
+#define LOG_SIZE 1024
 
 #define LOG_OP_BOOT      1
 #define LOG_OP_TIME_SET  10
@@ -129,6 +128,7 @@ static CODE log_ops[] = {
 };
 
 typedef struct log_s {
+    uint32_t bcnt;
     uint32_t cnt;
     int32_t usr;
     int32_t ts;
@@ -136,8 +136,11 @@ typedef struct log_s {
     int32_t par;
     int32_t res;
 } log_t;
+
 static int32_t log_cnt;
-static int32_t log_idx;
+static int32_t log_elements;
+static int32_t log_front;
+static int32_t log_rear;
 static log_t log[LOG_SIZE];
 // -- End Log stuff
 
@@ -161,8 +164,8 @@ static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 #define EGG_OVERHEAD crypto_box_NONCEBYTES + crypto_box_MACBYTES
 #define SEED_SIZE 16
 #define RX_BUFFER_SIZE 2048
-#define TX_BUFFER_SIZE 1024
-#define RESP_BUFFER_SIZE TX_BUFFER_SIZE - 32
+#define TX_BUFFER_SIZE 2048
+#define RESP_BUFFER_SIZE 1024
 #define DEF_CONN_TIMEOUT 300
 SemaphoreHandle_t session_sem;
 
@@ -357,18 +360,70 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
         usr = s->user;
         sh = s->h;
     }
-    log_cnt++;
-    log[log_idx].cnt = log_cnt;
-    log[log_idx].usr = usr;
-    log[log_idx].ts =  now;
-    log[log_idx].op = op;
-    log[log_idx].par = par;
-    log[log_idx].res = res;
-    log_idx++;
-    if (log_idx >= LOG_SIZE) {
-        log_idx = 0;
+    while (log_elements >= LOG_SIZE) {
+        log_front++;
+        if (log_front >= LOG_SIZE) {
+          log_front = 0;
+        }
+        log_elements--;
     }
-    ESP_LOGI("LOGGER","[%d] cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d", sh, log_cnt, usr, now, op, code2str(log_ops, op), par, res);
+
+    log_cnt++;
+    log[log_rear].bcnt = config.boot_cnt;
+    log[log_rear].cnt = log_cnt;
+    log[log_rear].usr = usr;
+    log[log_rear].ts =  now;
+    log[log_rear].op = op;
+    log[log_rear].par = par;
+    log[log_rear].res = res;
+    log_rear++;
+    if (log_rear >= LOG_SIZE) {
+        log_rear = 0;
+    }
+    log_elements++;
+    ESP_LOGI("LOGGER","[%d] boot:%d cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d uncnf:%d", sh, config.boot_cnt, log_cnt, usr, now, op, code2str(log_ops, op), par, res, log_elements);
+}
+
+static int log_purge(uint32_t bc, uint32_t lc) {
+    int purged = 0;
+
+    while (log_elements > 0) {
+        if(log[log_front].bcnt > bc) {
+            break;
+        }
+        if(log[log_front].bcnt == bc && log[log_front].cnt > lc ) {
+            break;
+        }
+        log_front++;
+        if (log_front >= LOG_SIZE) {
+            log_front = 0;
+        }
+        log_elements--;
+        purged++;
+    }
+    return purged;
+}
+
+static void log_append_msgpack(cw_pack_context *pc, int max){
+    if (max > log_elements){
+        max = log_elements;
+    }
+    cw_pack_cstr(pc, "lg"); cw_pack_array_size(pc, max);
+    int f = log_front;
+    for(int n = 0; n < max; n++) {
+        cw_pack_array_size(pc, 7);
+        cw_pack_unsigned(pc, log[f].bcnt);
+        cw_pack_unsigned(pc, log[f].cnt);
+        cw_pack_signed(pc, log[f].usr);
+        cw_pack_signed(pc, log[f].ts);
+        cw_pack_signed(pc, log[f].op);
+        cw_pack_signed(pc, log[f].par);
+        cw_pack_signed(pc, log[f].res);
+        f++;
+        if (f >= LOG_SIZE) {
+            f = 0;
+        }
+    }
 }
 
 static int respond(session_t *s) {
@@ -613,7 +668,7 @@ exitfn:
 static int append_egg(session_t *s, cw_pack_context *out) {
     int ret = 0;
     cw_pack_context pc;
-    uint8_t *blob = malloc(1024 + EGG_OVERHEAD);
+    uint8_t *blob = malloc(2048 + EGG_OVERHEAD);
     
     if (blob == NULL) {
         ret = -1;
@@ -623,7 +678,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     if (ota.start) {
         map_size += 5;
     }
-    cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 1024, NULL);
+    cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 4096, NULL);
     cw_pack_map_size(&pc, map_size);
     cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "sta");
     cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
@@ -631,16 +686,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
-    cw_pack_cstr(&pc, "lg"); cw_pack_array_size(&pc, LOG_SIZE);
-    for(int n = 0; n < LOG_SIZE; n++) {
-        cw_pack_array_size(&pc, LOG_FIELDS);
-        cw_pack_unsigned(&pc, log[n].cnt);
-        cw_pack_signed(&pc, log[n].usr);
-        cw_pack_signed(&pc, log[n].ts);
-        cw_pack_signed(&pc, log[n].op);
-        cw_pack_signed(&pc, log[n].par);
-        cw_pack_signed(&pc, log[n].res);
-    }
+    log_append_msgpack(&pc, 30);
     if (ota.start) {
         cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
         cw_pack_cstr(&pc, "ha"); cw_pack_bin(&pc, ota.sha256sum, sizeof(ota.sha256sum));
@@ -779,7 +825,25 @@ static int process_login_frame(session_t *s) {
     }
     s->user = upc.item.as.i64;
     ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
-    
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "l");
+    if (!r) {
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_ARRAY && upc.item.as.array.size == 2) {
+            cw_unpack_next(&upc);
+            uint32_t bc = upc.item.as.u64;
+            cw_unpack_next(&upc);
+            uint32_t lc = upc.item.as.u64;
+            int purged = log_purge(bc, lc);
+            if (purged > 0) {
+                ESP_LOGI("LOGIN", "[%d] purged %d log entries", s->h, purged);    
+            }
+        } else {
+            ESP_LOGE("LOGIN", "[%d] malformed \"l\" field", s->h);    
+        }
+    }
+
     msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "uk");
     if (r){
@@ -1352,9 +1416,9 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
 
 static int disconnect_cb(uint16_t conn) {
     int ret = 0;
+
     session_t *s = &session[conn];
-    while(!xSemaphoreTake(session_sem, portMAX_DELAY))
-        ;
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     ESP_LOGI(LOG_TAG, "[%d] Disconnected from: %02x:%02x:%02x:%02x:%02x:%02x", conn, s->address[0], s->address[1],
              s->address[2], s->address[3], s->address[4], s->address[5]);
     clear_session(s);
@@ -1435,8 +1499,8 @@ exitfn:
 
 static int rx_cb(uint16_t conn, const uint8_t *data, size_t data_len) {
     int retval = 0;
+
     session_t *s = &session[conn];
-    
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     if(!s->connected) {
         retval = 1;

@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 17
+#define FW_VER 18
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -151,12 +151,11 @@ static struct config_s {
     uint64_t key_ver;
     uint8_t public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t secret_key[crypto_box_SECRETKEYBYTES];
-    uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
     uint8_t vk_id[6];
 } config;
-
 static nvs_handle nvs_config_h;
 static uint8_t cfg_buf[512];
+static uint8_t ca_key[crypto_box_PUBLICKEYBYTES];
 static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
 
@@ -1438,7 +1437,7 @@ static int process_info_frame(session_t *s){
     cw_pack_map_size(&s->pc_tx, 4);
     cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "ri");
     cw_pack_cstr(&s->pc_tx, "pk"); cw_pack_bin(&s->pc_tx, config.public_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(&s->pc_tx, "ca"); cw_pack_bin(&s->pc_tx, config.ca_key, crypto_box_PUBLICKEYBYTES);
+    cw_pack_cstr(&s->pc_tx, "ca"); cw_pack_bin(&s->pc_tx, ca_key, crypto_box_PUBLICKEYBYTES);
     append_egg(s, &s->pc_tx);
     return ret;
 }
@@ -1568,7 +1567,6 @@ static esp_err_t save_flash_config() {
     cw_pack_cstr(&pc, "bc"); cw_pack_unsigned(&pc, config.boot_cnt);
     cw_pack_cstr(&pc, "sk"); cw_pack_bin(&pc, config.secret_key, crypto_box_SECRETKEYBYTES);
     cw_pack_cstr(&pc, "pk"); cw_pack_bin(&pc, config.public_key, crypto_box_PUBLICKEYBYTES);
-    cw_pack_cstr(&pc, "ca"); cw_pack_bin(&pc, config.ca_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
 
     err = nvs_set_blob(nvs_config_h, "config", cfg_buf, sizeof(cfg_buf));
@@ -1588,17 +1586,11 @@ exitfn:
 }
 
 static esp_err_t reset_flash_config(bool format) {
-    size_t olen = 0;
-
     memset(&config, 0, sizeof(config)); 
     if (format) {
         ESP_LOGI(LOG_TAG, "Formating new config values...");
         crypto_box_keypair(config.public_key, config.secret_key);
         randombytes_buf(config.vk_id, sizeof(config.vk_id));
-        mbedtls_base64_decode(config.ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
-        if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
-            ESP_LOGE(LOG_TAG, "Error computing ca shared key");
-        }
     } else {
         ESP_LOGI(LOG_TAG, "Cleaning config values (factory reset)...");
     }
@@ -1713,19 +1705,6 @@ static esp_err_t load_flash_config() {
     }
 
     msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "ca");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.ca_key, upc.item.as.bin.start, sizeof(config.ca_key));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"ca\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"ca\" field not found");
-    }
-
-    msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "id");
     if (!r){
         cw_unpack_next(&upc);
@@ -1739,9 +1718,6 @@ static esp_err_t load_flash_config() {
     }
 
     ESP_LOGI(LOG_TAG, "Config loaded")
-    if(crypto_box_beforenm(ca_shared, config.ca_key, config.secret_key) != 0) {
-        ESP_LOGE(LOG_TAG, "Error computing ca shared key");
-    }
     err = ESP_OK;
 exitfn:
     return err;
@@ -1830,14 +1806,15 @@ static int get_reset_button() {
 void app_main(void) {
     char chbuf[65];
     bool status_led = false;
+    size_t olen;
     
-    ESP_LOGI(LOG_TAG, "Starting virkey...");
-    printf("Magic:\"%s\"\n", magic);
-    setenv("TZ", "UTC0", 1);
-    tzset();
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
+    ESP_LOGI(LOG_TAG, "Starting virkey...");
+    printf("Magic:\"%s\"\n", magic);
     setup_gpio();
+    setenv("TZ", "UTC0", 1);
+    tzset();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     config.boot_cnt ++;
@@ -1847,6 +1824,10 @@ void app_main(void) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");
     }
 #endif
+    mbedtls_base64_decode(ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
+    if(crypto_box_beforenm(ca_shared, ca_key, config.secret_key) != 0) {
+        ESP_LOGE(LOG_TAG, "Error computing ca shared key");
+    }
     log_add(NULL, LOG_OP_BOOT, config.boot_cnt, 0);
     ESP_LOGI(LOG_TAG, "Boot counter: %u", config.boot_cnt);
     print_current_time(); 
@@ -1854,7 +1835,7 @@ void app_main(void) {
     ESP_LOGI(LOG_TAG, "virkey ID: %s", chbuf);
     bin2b64(config.public_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "public key: %s", chbuf);
-    bin2b64(config.ca_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
+    bin2b64(ca_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "CA key: %s", chbuf);
 
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.vk_id));

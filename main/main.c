@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 18
+#define FW_VER 20
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -210,6 +210,7 @@ typedef struct ota_s {
 } ota_t;
 static ota_t ota;
 static bool ota_lock;
+static uint32_t ota_next_fv_boot;
 // --- End OTA stuff
 
 // Time restrictions
@@ -680,7 +681,11 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 4096, NULL);
     cw_pack_map_size(&pc, map_size);
     cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "sta");
-    cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
+    if (ota_next_fv_boot) {
+        cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, ota_next_fv_boot);    
+    } else {
+        cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
+    }
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
@@ -1213,9 +1218,10 @@ static int do_cmd_fw(session_t *s){
                 reset_ota();
                 goto exitfn;
             }
+            ota_next_fv_boot = update;
             log_add(s, LOG_OP_FW_END, update, 0);
             reset_ota();
-            reset_tm = 10;
+            reset_tm = 50;
         } else {
             err = ERR_FLASH_CHECKSUM;
             reset_ota();
@@ -1478,10 +1484,9 @@ static int cmd_cb(session_t *s) {
 exitfn:    
     if(ret != 0) {
         s->login = false; // Logout on unrecoverable error
-        if(s->conn_timeout > 5){
-            s->conn_timeout = 5; // Set timeout to 500ms (allow last response to be sent and close)
+        if(s->conn_timeout > 20){
+            s->conn_timeout = 20; // Set timeout to 2 seconds (allow last response and egg fetch)
         }
-        s->blocked = true;
         if (ret > 0) {
             cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Reset response pack context
             cw_pack_map_size(&s->pc_tx, 2);
@@ -1591,6 +1596,9 @@ static esp_err_t reset_flash_config(bool format) {
         ESP_LOGI(LOG_TAG, "Formating new config values...");
         crypto_box_keypair(config.public_key, config.secret_key);
         randombytes_buf(config.vk_id, sizeof(config.vk_id));
+        if(crypto_box_beforenm(ca_shared, ca_key, config.secret_key) != 0) {
+            ESP_LOGE(LOG_TAG, "Error computing ca shared key");
+        }
     } else {
         ESP_LOGI(LOG_TAG, "Cleaning config values (factory reset)...");
     }

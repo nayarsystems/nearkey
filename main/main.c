@@ -21,7 +21,7 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_system.h"
-#include "esp_deep_sleep.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"

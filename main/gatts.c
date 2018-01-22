@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "bt.h"
+#include "esp_bt.h"
 #include "bta_api.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -363,6 +363,10 @@ int init_gatts(gatts_connect_cb_t conn_cb,
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s enable bluetooth failed", __func__);
         return ESP_FAIL;
+    }
+    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P7);
+    if(ret) {
+        ESP_LOGE(LOG_TAG, "%s ble tx power set failed", __func__);
     }
 
     esp_ble_gatts_register_callback(gatts_event_handler);

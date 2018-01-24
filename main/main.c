@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 21
+#define FW_VER 22
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -724,10 +724,19 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     return ret;
 }
 
+static void logout_session(session_t *s) {
+    s->login = false;
+    if (s->ota_lock) {
+        s->ota_lock = false;
+        ota_lock = false;
+    }
+}
+
 static int process_login_frame(session_t *s) {
     int ret = 0, err = 0;
     cw_unpack_context upc;
 
+    logout_session(s);
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     int r = msgpack_map_search(&upc, "d");
     if (r){
@@ -1295,11 +1304,7 @@ static int process_cmd_frame(session_t *s) {
 
     // [q] command (QUIT)
     if(strcmp(cmd_str, "q") == 0) { // Quit
-        s->login = false;
-        if (s->ota_lock) {
-            s->ota_lock = false;
-            ota_lock = false;
-        }
+        logout_session(s);
         goto exitok;
     }
 

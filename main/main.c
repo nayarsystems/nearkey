@@ -1,5 +1,5 @@
 #define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 22
+#define FW_VER 23
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -343,7 +343,9 @@ static bool chk_time() {
 }
 
 static void reboot(){
-    esp_deep_sleep(1000LL * 10); // 10ms
+    ESP_LOGI(LOG_TAG, "Soft reset");
+    // esp_deep_sleep(1000LL * 10); // 10ms
+    esp_restart();
 }
 
 static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {

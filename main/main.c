@@ -1,5 +1,5 @@
-#define CA_PK "wGuvDFUQLiTeUp2o5VlVbK6+8lP+UMVeClxpQ6RpkAA="
-#define FW_VER 23
+#define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
+#define FW_VER 24
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 

@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 24
+#define FW_VER 25
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -212,16 +212,6 @@ static ota_t ota;
 static bool ota_lock;
 static uint32_t ota_next_fv_boot;
 // --- End OTA stuff
-
-// Time restrictions
-typedef struct time_res_s {
-    uint8_t dow;
-    uint32_t dom;
-    uint16_t mon;
-    uint8_t n_ran;
-    uint32_t ran[10];
-} __attribute__((packed)) time_res_t;
-// --- End Time restrictions 
 
 // Egg stuff
 typedef struct egg_header_s {
@@ -501,7 +491,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             goto exitfn;
         }
 
-        if (chk_time_res(s, "z", false) == 0 ){
+        if (chk_time_res(s, "z", false) != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
@@ -537,84 +527,64 @@ exitfn:
     return err;
 }
  
-
-static int chk_time_res_buf(const uint8_t *buf, size_t sz){
-    time_res_t tr = {0};
-    int ret = 0;
-
-    if (sz > sizeof(tr)){
-        sz = sizeof(tr);
-    }
-    memcpy(&tr, buf, sz);
-
-    time_t now = time(NULL);
-    struct tm ltm;
-    if (localtime_r(&now, &ltm) == NULL){
-        ret = -1;
-        goto exitfn;
-    }
-    // Check day of week
-    if (!(tr.dow & ((uint8_t)1 << ltm.tm_wday))){
-        ret = 1;
-        goto exitfn;
-    }
-    // Check day of month
-    if (!(tr.dom & ((uint32_t)1 << (ltm.tm_mday - 1)))){
-        ret = 1;
-        goto exitfn;
-    }
-    // Check month
-    if (!(tr.mon & ((uint16_t)1 << ltm.tm_mon))){
-        ret = 1;
-        goto exitfn;
-    }
-    // Check minute ranges of day 
-    int min = ltm.tm_hour * 60 + ltm.tm_min;
-    for(int n = 0; n < tr.n_ran; n++){
-        if(min >= (tr.ran[n] & 0xffff) && min <= (tr.ran[n] >> 16)){
-            ret = 0;
-            goto exitfn;
-        }
-        ret = 1;
-    }
- 
-exitfn:
-    return ret;
-}
-
-static int chk_time_res(session_t *s, const char *field, bool nreq) {
+static int chk_time_res(session_t *s, const char *field, bool allow) {
     int ret = 0;
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = msgpack_map_search(&upc, field);
     if (r){
-        if (nreq) {
-            ret = 0;
-        } else {
-            ret = 1;
-        }
-        goto exitfn;
+        ret = 0;
+        goto exitfn; //If not field presence, allow access by default
     }
     cw_unpack_next(&upc);
     if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
-        ESP_LOGE("CHK_TIME_RES", "[%d] Time restrictions field is not array type", s->h);
+        ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s is not array type", s->h, field);
         ret = 2;
         goto exitfn;
     }
     for(int i = upc.item.as.array.size; i > 0; i--) {
         cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restriction isn't str/bin type", s->h);
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_ARRAY)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s entry isn't array type", s->h, field);
             ret = 2;
             goto exitfn;
         }
-        if(chk_time_res_buf(upc.item.as.bin.start, upc.item.as.bin.length) == 0) {
-            ret = 0;
+        if(upc.item.as.array.size != 2) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s array size missmatch", s->h, field);
+            ret = 2;
             goto exitfn;
         }
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s Invalid array element type [from]", s->h, field);
+            ret = 2;
+            goto exitfn;
+        }
+        uint64_t from = upc.item.as.u64;
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s Invalid array element type [to]", s->h, field);
+            ret = 2;
+            goto exitfn;
+        }
+        uint64_t to = upc.item.as.u64;
+        time_t now = time(NULL);
+        if (now >= from && now <= to) {
+            if (allow) {
+                ret = 0;
+            } else {
+                ret = 1;
+            }
+            goto exitfn;
+        }
+        
     }
-    ret = 1;
+    if (allow) {
+        ret = 1;
+    } else {
+        ret = 0;
+    }
 exitfn:
     return ret;
 }
@@ -659,7 +629,7 @@ static int chk_expiration(session_t *s) {
         goto exitfn;
     }
     if (now > upc.item.as.u64) {
-        ESP_LOGE("CHK_EXPIRATION", "[%d] Time before valid range.", s->h);
+        ESP_LOGE("CHK_EXPIRATION", "[%d] Time after valid range.", s->h);
         ret = -1;
         goto exitfn;
     }
@@ -933,6 +903,14 @@ static int process_login_frame(session_t *s) {
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;
+            goto exitfn;
+        }
+        if (chk_time_res(s, "y", true) != 0 ){
+            err = ERR_TIME_RESTRICTION;
+            goto exitfn;
+        }
+        if (chk_time_res(s, "z", false) != 0 ){
+            err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
     } else {

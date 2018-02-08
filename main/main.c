@@ -95,7 +95,7 @@ static CODE errors[] = {
     {ERR_INVALID_PARAMS, "Invalid params"},
     {ERR_KEY_EXPIRED, "Key expired"},
     {ERR_TIME_RESTRICTION, "Access denied due to temporary restriction rules"},
-    {ERR_CLOCK_DESYNC, "Clock desynchronized"},
+    {ERR_CLOCK_DESYNC, "Desynchronized clock"},
     {ERR_FLASH_LOCKED, "Flash Locked"},
     {ERR_FLASH_NOTOWNED, "Flash not owned"},
     {ERR_FLASH_OTAINIT, "OTA not initialized"},

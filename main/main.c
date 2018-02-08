@@ -486,12 +486,12 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_KEY_EXPIRED;
             goto exitfn;
         }
-        if (chk_time_res(s, "y", true) != 0 ){
+        if (chk_time_res(s, "p", true) != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
 
-        if (chk_time_res(s, "z", false) != 0 ){
+        if (chk_time_res(s, "d", false) != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
@@ -903,14 +903,6 @@ static int process_login_frame(session_t *s) {
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;
-            goto exitfn;
-        }
-        if (chk_time_res(s, "y", true) != 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
-        }
-        if (chk_time_res(s, "z", false) != 0 ){
-            err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
     } else {

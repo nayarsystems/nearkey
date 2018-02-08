@@ -60,6 +60,7 @@ static int const act_gpio[] = ACTUATORS_GPIO;
 #define ERR_PERMISSION_DENIED   201
 #define ERR_KEY_EXPIRED         202
 #define ERR_TIME_RESTRICTION    203
+#define ERR_CLOCK_DESYNC        204
 
 #define ERR_UNKNOWN_COMMAND     300
 #define ERR_INVALID_PARAMS      301
@@ -94,6 +95,7 @@ static CODE errors[] = {
     {ERR_INVALID_PARAMS, "Invalid params"},
     {ERR_KEY_EXPIRED, "Key expired"},
     {ERR_TIME_RESTRICTION, "Access denied due to temporary restriction rules"},
+    {ERR_CLOCK_DESYNC, "Clock desynchronized"},
     {ERR_FLASH_LOCKED, "Flash Locked"},
     {ERR_FLASH_NOTOWNED, "Flash not owned"},
     {ERR_FLASH_OTAINIT, "OTA not initialized"},
@@ -479,7 +481,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = 0;
             goto exitfn;
         }
-        err = ERR_PERMISSION_DENIED;
+        err = ERR_CLOCK_DESYNC;
         goto exitfn;
     } else {
         if (chk_expiration(s) != 0) {

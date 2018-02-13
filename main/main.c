@@ -537,9 +537,13 @@ static int chk_time_res(session_t *s, const char *field, bool allow) {
     int r = msgpack_map_search(&upc, field);
     if (r){
         ret = 0;
-        goto exitfn; //If not field presence, allow access by default
+        goto exitfn; // If not field presence, allow access by default
     }
     cw_unpack_next(&upc);
+    if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_NIL) {
+        ret = 0;
+        goto exitfn; // If field is nil, allow access by default
+    }
     if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
         ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s is not array type", s->h, field);
         ret = 2;
@@ -599,9 +603,13 @@ static int chk_expiration(session_t *s) {
     int r = msgpack_map_search(&upc, "x");
     if (r){
         ret = 0;
-        goto exitfn;
+        goto exitfn; // If not field presence, allow access by default
     }
     cw_unpack_next(&upc);
+    if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_NIL) {
+        ret = 0;
+        goto exitfn; // If field is nil, allow access by default
+    }
     if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
         ESP_LOGE("CHK_EXPIRATION", "[%d] Expiration field is not array type", s->h);
         ret = 2;

@@ -595,6 +595,32 @@ exitfn:
     return ret;
 }
 
+static int chk_ver_upgrade(session_t *s) {
+    int ret = 0;
+    cw_unpack_context upc;
+
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, "w");
+    if (r){
+        ret = 0;
+        goto exitfn; // If not field presence, allow instant version upgrades
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("CHK_VER_UPGRADE", "[%d] Invalid timestamp type", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    time_t now = time(NULL);
+    if (now < upc.item.as.u64) {
+        ret = 1;
+        goto exitfn;
+    }
+
+exitfn:
+    return ret;
+}
+
 static int chk_expiration(session_t *s) {
     int ret = 0;
     cw_unpack_context upc;
@@ -905,11 +931,14 @@ static int process_login_frame(session_t *s) {
         goto exitfn;
     }
     if (upc.item.as.u64 > config.key_ver) {
-        config.key_ver = upc.item.as.u64;
-        save_flash_config();
-        ESP_LOGI("LOGIN", "[%d] Updated key to version:%llu", s->h, config.key_ver);
+        if (chk_ver_upgrade(s) == 0) {
+            ESP_LOGI("LOGIN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
+            config.key_ver = upc.item.as.u64;
+            save_flash_config();
+        } else {
+            ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
+        }
     }
-
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;

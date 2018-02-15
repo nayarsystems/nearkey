@@ -115,6 +115,7 @@ static CODE errors[] = {
 #define LOG_SIZE 1024
 
 #define LOG_OP_BOOT      1
+#define LOG_OP_ERROR     2
 #define LOG_OP_TIME_SET  10
 #define LOG_OP_FW_INIT   20
 #define LOG_OP_FW_END    21
@@ -122,6 +123,7 @@ static CODE errors[] = {
 
 static CODE log_ops[] = {
     {LOG_OP_BOOT, "Boot"},
+    {LOG_OP_ERROR, "Error"},
     {LOG_OP_TIME_SET, "Time set"},
     {LOG_OP_FW_INIT, "Firmware flash init"},
     {LOG_OP_FW_END, "Firmware flash end"},
@@ -928,6 +930,7 @@ static int process_login_frame(session_t *s) {
     }
     if (upc.item.as.u64 < config.key_ver) {
         err = ERR_OLD_KEY_VERSION;
+        log_add(s, LOG_OP_ERROR, err, 0);
         goto exitfn;
     }
     if (upc.item.as.u64 > config.key_ver) {
@@ -942,6 +945,7 @@ static int process_login_frame(session_t *s) {
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;
+            log_add(s, LOG_OP_ERROR, err, 0);
             goto exitfn;
         }
     } else {
@@ -1344,6 +1348,7 @@ static int process_cmd_frame(session_t *s) {
 
     err = chk_cmd_access(s, cmd_str);
     if (err != 0) {
+        log_add(s, LOG_OP_ERROR, err, 0);
         goto exitfn;
     }
 

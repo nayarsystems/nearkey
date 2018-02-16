@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 25
+#define FW_VER 26
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -139,6 +139,7 @@ typedef struct log_s {
     int32_t op;
     int32_t par;
     int32_t res;
+    uint32_t rep;
 } log_t;
 
 static int32_t log_cnt;
@@ -363,6 +364,17 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
         }
         log_elements--;
     }
+    if (log_elements > 0) {
+        int32_t last_log_idx = log_rear - 1;
+        if (last_log_idx < 0) {
+            last_log_idx = LOG_SIZE - 1;
+        }
+        if (log[last_log_idx].usr == usr && log[last_log_idx].op == op && log[last_log_idx].par == par && log[last_log_idx].res == res && (now - log[last_log_idx].ts) < 60) {
+            log[last_log_idx].rep ++;
+             ESP_LOGI("LOGGER","[%d] last entry repeated %d times", sh, log[last_log_idx].rep);
+             return;
+        }
+    }
 
     log_cnt++;
     log[log_rear].bcnt = config.boot_cnt;
@@ -372,6 +384,7 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     log[log_rear].op = op;
     log[log_rear].par = par;
     log[log_rear].res = res;
+    log[log_rear].rep = 0;
     log_rear++;
     if (log_rear >= LOG_SIZE) {
         log_rear = 0;
@@ -407,7 +420,7 @@ static void log_append_msgpack(cw_pack_context *pc, int max){
     cw_pack_cstr(pc, "lg"); cw_pack_array_size(pc, max);
     int f = log_front;
     for(int n = 0; n < max; n++) {
-        cw_pack_array_size(pc, 7);
+        cw_pack_array_size(pc, 8);
         cw_pack_unsigned(pc, log[f].bcnt);
         cw_pack_unsigned(pc, log[f].cnt);
         cw_pack_signed(pc, log[f].usr);
@@ -415,6 +428,7 @@ static void log_append_msgpack(cw_pack_context *pc, int max){
         cw_pack_signed(pc, log[f].op);
         cw_pack_signed(pc, log[f].par);
         cw_pack_signed(pc, log[f].res);
+        cw_pack_unsigned(pc, log[f].rep);
         f++;
         if (f >= LOG_SIZE) {
             f = 0;

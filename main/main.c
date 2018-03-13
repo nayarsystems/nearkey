@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 26
+#define FW_VER 27
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -249,6 +249,7 @@ static void set_actuator(int act, int st);
 static void clear_session(session_t *s);
 static int chk_expiration(session_t *s);
 static int chk_time_res(session_t *s, const char *field, bool nreq);
+static int chk_time_res_2(session_t *s, const char *field, bool nreq);
 // --- End Function definitions
 
 
@@ -513,6 +514,15 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
+        if (chk_time_res_2(s, "y", true) != 0 ){
+            err = ERR_TIME_RESTRICTION;
+            goto exitfn;
+        }
+
+        if (chk_time_res_2(s, "z", false) != 0 ){
+            err = ERR_TIME_RESTRICTION;
+            goto exitfn;
+        }
     }
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
@@ -544,7 +554,163 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
 exitfn:
     return err;
 }
+
+static int chk_time_res_2(session_t *s, const char *field, bool allow){
+    int ret = 0;
+    cw_unpack_context upc;
+    time_t now = time(NULL);
+    struct tm ltm;
+    if (localtime_r(&now, &ltm) == NULL){
+        ESP_LOGE("CHK_TIME_RES", "[%d] Error getting local time", s->h);
+        ret = 2;
+        goto exitfn;
+    }
+    int min_now = ltm.tm_hour * 60 + ltm.tm_min;
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, field);
+    if (r){
+        ret = 0;
+        goto exitfn; // If not field presence, allow access by default
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_NIL) {
+        ret = 0;
+        goto exitfn; // If field is nil, allow access by default
+    }
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
+        ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s is not array type", s->h, field);
+        ret = 2;
+        goto exitfn;
+    }
+    int last_level = -1;
+    bool match = false;
+    for(int i = upc.item.as.array.size; i > 0; i--) {
+        cw_unpack_next(&upc);
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_ARRAY)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule entry isn't array type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        int left = upc.item.as.array.size;
+        if(left < 6) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule array size less than 6", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        cw_unpack_next(&upc);
+        left--;
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule level field isn't positive integer type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        int level = upc.item.as.u64;
+        if (last_level == -1) {
+            last_level = level;
+        }
+        if (level != last_level) {
+            last_level = level;
+            if (allow){
+                if (match) {
+                    match = false;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        cw_unpack_next(&upc);
+        left--;
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule days of week field isn't positive integer type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        // Check day of week
+        if (!(upc.item.as.u64 & ((uint64_t)1 << ltm.tm_wday))){
+            goto continue_next;
+        }
+
+        cw_unpack_next(&upc);
+        left--;
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule days of month field isn't positive integer type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        // Check day of month
+        if (!(upc.item.as.u64 & ((uint64_t)1 << (ltm.tm_mday - 1)))){
+            goto continue_next;
+        }
+
+        cw_unpack_next(&upc);
+        left--;
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule months field isn't positive integer type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        // Check month
+        if (!(upc.item.as.u64 & ((uint64_t)1 << ltm.tm_mon))){
+            goto continue_next;
+        }
+        if (left & 1) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule minutes range field length isn't even", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+
+        while (left) {
+            cw_unpack_next(&upc);
+            left--;
+            if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+                ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule minutes from field isn't positive integer type", s->h);
+                ret = 2;
+                goto exitfn;
+            }
+            uint64_t from = upc.item.as.u64;
+            cw_unpack_next(&upc);
+            left--;
+            if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+                ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule minutes from field isn't positive integer type", s->h);
+                ret = 2;
+                goto exitfn;
+            }
+            uint64_t to = upc.item.as.u64;
+            if ((min_now >= from) && (min_now <= to)){
+                match = true;
+                goto continue_next;
+            }
+        }
+
+continue_next:
+        while (left) {
+            cw_unpack_next(&upc);
+            left--;
+        }
+        if (match && !allow) {
+            break;
+        }
+    }
+
+    if (allow) {
+        if (match) {
+            ret = 0;
+        } else {
+            ret = 1;
+        }
+    } else {
+        if (match) {
+            ret = 1;
+        } else {
+            ret = 0;
+        }
+    }
  
+exitfn:
+    return ret;
+}
+
 static int chk_time_res(session_t *s, const char *field, bool allow) {
     int ret = 0;
     cw_unpack_context upc;
@@ -1856,7 +2022,7 @@ void app_main(void) {
     ESP_LOGI(LOG_TAG, "Starting virkey...");
     printf("Magic:\"%s\"\n", magic);
     setup_gpio();
-    setenv("TZ", "UTC0", 1);
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // Fixme (hardcoded but must reside in config)
     tzset();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());

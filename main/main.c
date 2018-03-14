@@ -152,11 +152,13 @@ static log_t log[LOG_SIZE];
 // Config stuff
 static struct config_s {
     uint32_t fw_ver;
-    uint32_t boot_cnt; 
+    uint32_t boot_cnt;
+    uint32_t cfg_ver;
     uint64_t key_ver;
     uint8_t public_key[crypto_box_PUBLICKEYBYTES];
     uint8_t secret_key[crypto_box_SECRETKEYBYTES];
     uint8_t vk_id[6];
+    char tz_data[64];
 } config;
 static nvs_handle nvs_config_h;
 static uint8_t cfg_buf[512];
@@ -1775,13 +1777,15 @@ static esp_err_t save_flash_config() {
     config.fw_ver = FW_VER;
     // Translate config struct to msgpack
     cw_pack_context_init(&pc, cfg_buf, sizeof(cfg_buf), NULL);
-    cw_pack_map_size(&pc, 7);
+    cw_pack_map_size(&pc, 8);
     cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, config.fw_ver);
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
     cw_pack_cstr(&pc, "bc"); cw_pack_unsigned(&pc, config.boot_cnt);
+    cw_pack_cstr(&pc, "cf"); cw_pack_unsigned(&pc, config.cfg_ver);
     cw_pack_cstr(&pc, "sk"); cw_pack_bin(&pc, config.secret_key, crypto_box_SECRETKEYBYTES);
     cw_pack_cstr(&pc, "pk"); cw_pack_bin(&pc, config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
+    cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz_data);
 
     err = nvs_set_blob(nvs_config_h, "config", cfg_buf, sizeof(cfg_buf));
     if(err != ESP_OK) {
@@ -1894,6 +1898,18 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"bc\" field not found");
     }
 
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "cf");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
+            config.cfg_ver = upc.item.as.u64;
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"cf\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"cf\" field not found");
+    }
 
     msgpack_restore(&upc);
     r = msgpack_map_search(&upc, "sk");
@@ -1933,6 +1949,21 @@ static esp_err_t load_flash_config() {
     } else {
         ESP_LOGE("CONFIG", "\"id\" field not found");
     }
+
+    msgpack_restore(&upc);
+    r = msgpack_map_search(&upc, "tz");
+    if (!r){
+        cw_unpack_next(&upc);
+        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_STR) {
+            msgpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
+        } else {
+            ESP_LOGE("CONFIG", "invalid \"tz\" field");
+        }
+    } else {
+        ESP_LOGE("CONFIG", "\"tz\" field not found, default to Europe/Madrid"); // Fix to UTC0
+        strcpy(config.tz_data, "CET-1CEST,M3.5.0,M10.5.0/3");
+    }
+
 
     ESP_LOGI(LOG_TAG, "Config loaded")
     err = ESP_OK;
@@ -2030,12 +2061,13 @@ void app_main(void) {
     ESP_LOGI(LOG_TAG, "Starting virkey...");
     printf("Magic:\"%s\"\n", magic);
     setup_gpio();
-    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // Fixme (hardcoded but must reside in config)
-    tzset();
     ESP_ERROR_CHECK(init_flash());
     ESP_ERROR_CHECK(load_flash_config());
     config.boot_cnt ++;
     ESP_ERROR_CHECK(save_flash_config());
+    setenv("TZ", config.tz_data, 1);
+    tzset();
+    
 #ifdef RTC_DRIVER    
     if (hctosys() != 0) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock");

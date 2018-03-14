@@ -248,8 +248,8 @@ static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static void clear_session(session_t *s);
 static int chk_expiration(session_t *s);
-static int chk_time_res(session_t *s, const char *field, bool nreq);
-static int chk_time_res_2(session_t *s, const char *field, bool nreq);
+static int chk_time_res(session_t *s, const char *field, bool allow);
+static int chk_time_res_2(session_t *s, const char *field);
 // --- End Function definitions
 
 
@@ -514,12 +514,8 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
-        if (chk_time_res_2(s, "y", true) != 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
-        }
 
-        if (chk_time_res_2(s, "z", false) != 0 ){
+        if (chk_time_res_2(s, "y") != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
@@ -555,7 +551,7 @@ exitfn:
     return err;
 }
 
-static int chk_time_res_2(session_t *s, const char *field, bool allow){
+static int chk_time_res_2(session_t *s, const char *field){
     int ret = 0;
     cw_unpack_context upc;
     time_t now = time(NULL);
@@ -584,6 +580,7 @@ static int chk_time_res_2(session_t *s, const char *field, bool allow){
     }
     int last_level = -1;
     bool match = false;
+    bool allow_rules = false;
     for(int i = upc.item.as.array.size; i > 0; i--) {
         cw_unpack_next(&upc);
         if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_ARRAY)) {
@@ -592,8 +589,8 @@ static int chk_time_res_2(session_t *s, const char *field, bool allow){
             goto exitfn;
         }
         int left = upc.item.as.array.size;
-        if(left < 6) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule array size less than 6", s->h);
+        if(left < 7) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule array size less than 7", s->h);
             ret = 2;
             goto exitfn;
         }
@@ -610,13 +607,27 @@ static int chk_time_res_2(session_t *s, const char *field, bool allow){
         }
         if (level != last_level) {
             last_level = level;
-            if (allow){
+            if (allow_rules){
                 if (match) {
                     match = false;
+                    allow_rules = false;
                 } else {
-                    break;
+                    ret = 1;
+                    goto exitfn;
                 }
             }
+        }
+
+        cw_unpack_next(&upc);
+        left--;
+        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER)) {
+            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions rule allow field isn't positive integer type", s->h);
+            ret = 2;
+            goto exitfn;
+        }
+        bool allow = (upc.item.as.u64 != 0);
+        if (allow) {
+            allow_rules = true;
         }
 
         cw_unpack_next(&upc);
@@ -679,6 +690,10 @@ static int chk_time_res_2(session_t *s, const char *field, bool allow){
             uint64_t to = upc.item.as.u64;
             if ((min_now >= from) && (min_now <= to)){
                 match = true;
+                if (!allow) {
+                    ret = 1;
+                    goto exitfn;
+                }
                 goto continue_next;
             }
         }
@@ -688,23 +703,16 @@ continue_next:
             cw_unpack_next(&upc);
             left--;
         }
-        if (match && !allow) {
-            break;
-        }
     }
 
-    if (allow) {
-        if (match) {
+    if (allow_rules) {
+       if (match) {
             ret = 0;
-        } else {
-            ret = 1;
-        }
+       } else  {
+            ret = 1;       
+       }
     } else {
-        if (match) {
-            ret = 1;
-        } else {
-            ret = 0;
-        }
+        ret = 0;
     }
  
 exitfn:

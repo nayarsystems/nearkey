@@ -351,6 +351,11 @@ static void bin2b64(const uint8_t* buf, size_t sz, char* dst, size_t dst_sz) {
     dst[dst_sz] = 0;
 }
 
+static void after_config(){
+    setenv("TZ", config.tz_data, 1);
+    tzset();
+}
+
 static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     int32_t usr = -1;
     int32_t sh = -1; 
@@ -924,6 +929,54 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     return ret;
 }
 
+static void chk_attached_config(session_t *s){
+    cw_unpack_context upc, back_upc;
+
+    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    int r = msgpack_map_search(&upc, "cf");
+    if(r) {
+        goto exitfn;
+    }
+    back_upc = upc;
+
+    r = msgpack_map_search(&upc, "cv");
+    if(r) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" entry not pressent", s->h);
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" is not positive integer", s->h);
+        goto exitfn;
+    }
+    uint32_t cv = upc.item.as.u64;
+    if (cv <= config.cfg_ver) {
+        ESP_LOGI("ATTACHED_CONFIG", "[%d] Old config attached on key", s->h);
+        goto exitfn;
+    }
+    config.cfg_ver = cv;
+
+    upc = back_upc;
+    r = msgpack_map_search(&upc, "tz");
+    if(r) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" entry not pressent", s->h);
+        goto exitfn;
+    }
+    cw_unpack_next(&upc);
+    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" is not string", s->h);
+        goto exitfn;
+    }
+    msgpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
+    ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
+
+    save_flash_config();
+    after_config();
+
+exitfn:
+    return;
+}
+
 static void logout_session(session_t *s) {
     s->login = false;
     if (s->ota_lock) {
@@ -1141,6 +1194,7 @@ static int process_login_frame(session_t *s) {
     } else {
         ESP_LOGE("LOGIN", "[%d] clock out of time. Only \"ts\" command allowed", s->h);
     }
+    chk_attached_config(s);
 
     s->login = true;
     cw_pack_map_size(&s->pc_resp, 3);
@@ -2065,8 +2119,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(load_flash_config());
     config.boot_cnt ++;
     ESP_ERROR_CHECK(save_flash_config());
-    setenv("TZ", config.tz_data, 1);
-    tzset();
+    after_config();
     
 #ifdef RTC_DRIVER    
     if (hctosys() != 0) {

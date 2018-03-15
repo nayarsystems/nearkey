@@ -333,7 +333,7 @@ void print_current_time(void) {
     char chbuf[64];
     
     time_t now = time(NULL);
-    ESP_LOGI(LOG_TAG, "Current time (UTC): %s", nctime_r(&now, chbuf));
+    ESP_LOGI(LOG_TAG, "Local time: %s", nctime_r(&now, chbuf));
 }
 
 static bool chk_time() {
@@ -1863,6 +1863,7 @@ static esp_err_t reset_flash_config(bool format) {
         ESP_LOGI(LOG_TAG, "Formating new config values...");
         crypto_box_keypair(config.public_key, config.secret_key);
         randombytes_buf(config.vk_id, sizeof(config.vk_id));
+        strcpy(config.tz_data, "UTC0");
         if(crypto_box_beforenm(ca_shared, ca_key, config.secret_key) != 0) {
             ESP_LOGE(LOG_TAG, "Error computing ca shared key");
         }
@@ -2014,8 +2015,10 @@ static esp_err_t load_flash_config() {
             ESP_LOGE("CONFIG", "invalid \"tz\" field");
         }
     } else {
-        ESP_LOGE("CONFIG", "\"tz\" field not found, default to Europe/Madrid"); // Fix to UTC0
-        strcpy(config.tz_data, "CET-1CEST,M3.5.0,M10.5.0/3");
+        ESP_LOGE("CONFIG", "\"tz\" field not found");
+    }
+    if (strlen(config.tz_data) == 0){
+        strcpy(config.tz_data, "UTC0");
     }
 
 

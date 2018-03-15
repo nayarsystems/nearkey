@@ -897,7 +897,6 @@ static void chk_attached_config(session_t *s){
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = cw_unpack_map_search(&upc, "cf");
     if(r) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] No encuentro la entrada cf en la key", s->h);
         goto exitfn;
     }
     back_upc = upc;

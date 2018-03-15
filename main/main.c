@@ -13,6 +13,7 @@
 
 #include "sodium.h"
 #include "cwpack.h"
+#include "cwpack_util.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "esp_bt_defs.h"
@@ -282,46 +283,6 @@ static const char *code2str(CODE *map, int code) {
     return "";
 }
 
-static void cw_pack_cstr(cw_pack_context *pc, const char *str) {
-    cw_pack_str(pc, str, strlen(str));
-}
-
-static void msgpack_restore(cw_unpack_context *upc){
-    upc->item.type = CWP_NOT_AN_ITEM;
-    upc->current = upc->start;
-    upc->return_code = CWP_RC_OK;
-    upc->err_no = 0;
-}
-
-static char *msgpack_cstr(cw_unpack_context *upc, char *buff, size_t bsize) {
-    memset(buff, 0, bsize);
-    size_t sz = upc->item.as.str.length;
-    if (sz > bsize - 1) {
-        sz = bsize - 1;
-    }
-    strncpy(buff, upc->item.as.str.start, sz);
-    return buff;
-}
-
-static int msgpack_cmp_str(cw_unpack_context *upc, const char *str){
-    if (upc->item.type != CWP_ITEM_STR) return -1;
-    if (upc->item.as.str.length != strlen(str)) return -1;
-    if (strncmp(upc->item.as.str.start, str, upc->item.as.str.length) != 0) return -1;
-    return 0;
-}
-
-static int msgpack_map_search(cw_unpack_context *upc, const char *key){
-    cw_unpack_next(upc);
-    if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_MAP) return -1;
-    for (uint32_t ms = upc->item.as.map.size; ms > 0 ; ms --) {
-        cw_unpack_next(upc);
-        if (upc->return_code != CWP_RC_OK || upc->item.type != CWP_ITEM_STR) return -1;
-        if (msgpack_cmp_str(upc, key) == 0) return 0;
-        cw_skip_items(upc, 1); // Skip value item
-    }
-    return -1;
-}
-
 static char *nctime_r(const time_t *timep, char *buf){
     char *ret = ctime_r(timep, buf);
     size_t l = strlen(buf);
@@ -529,7 +490,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
     }
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, "a");
+    int r = cw_unpack_map_search(&upc, "a");
     if (r){
         ESP_LOGE("CMD", "[%d] There isn't command access list, all commands denied by default", s->h);
         err = ERR_INTERNAL;
@@ -548,7 +509,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_INTERNAL;
             goto exitfn;
         }
-        msgpack_cstr(&upc, str_buf, sizeof(str_buf));
+        cw_unpack_cstr(&upc, str_buf, sizeof(str_buf));
         if (cmp_perm(str_buf, cmd) == 0) {
             goto exitfn;
         }
@@ -570,7 +531,7 @@ static int chk_time_res_2(session_t *s, const char *field){
     }
     int min_now = ltm.tm_hour * 60 + ltm.tm_min;
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, field);
+    int r = cw_unpack_map_search(&upc, field);
     if (r){
         ret = 0;
         goto exitfn; // If not field presence, allow access by default
@@ -731,7 +692,7 @@ static int chk_time_res(session_t *s, const char *field, bool allow) {
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, field);
+    int r = cw_unpack_map_search(&upc, field);
     if (r){
         ret = 0;
         goto exitfn; // If not field presence, allow access by default
@@ -797,7 +758,7 @@ static int chk_ver_upgrade(session_t *s) {
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, "w");
+    int r = cw_unpack_map_search(&upc, "w");
     if (r){
         ret = 0;
         goto exitfn; // If not field presence, allow instant version upgrades
@@ -823,7 +784,7 @@ static int chk_expiration(session_t *s) {
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, "x");
+    int r = cw_unpack_map_search(&upc, "x");
     if (r){
         ret = 0;
         goto exitfn; // If not field presence, allow access by default
@@ -879,7 +840,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         ret = -1;
         goto exitfn;
     }
-    size_t map_size = 7; 
+    size_t map_size = 8; 
     if (ota.start) {
         map_size += 5;
     }
@@ -892,6 +853,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
         cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, FW_VER);
     }
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
+    cw_pack_cstr(&pc, "cv"); cw_pack_unsigned(&pc, config.cfg_ver);
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
@@ -933,13 +895,14 @@ static void chk_attached_config(session_t *s){
     cw_unpack_context upc, back_upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, "cf");
+    int r = cw_unpack_map_search(&upc, "cf");
     if(r) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] No encuentro la entrada cf en la key", s->h);
         goto exitfn;
     }
     back_upc = upc;
 
-    r = msgpack_map_search(&upc, "cv");
+    r = cw_unpack_map_search(&upc, "cv");
     if(r) {
         ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" entry not pressent", s->h);
         goto exitfn;
@@ -957,7 +920,7 @@ static void chk_attached_config(session_t *s){
     config.cfg_ver = cv;
 
     upc = back_upc;
-    r = msgpack_map_search(&upc, "tz");
+    r = cw_unpack_map_search(&upc, "tz");
     if(r) {
         ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" entry not pressent", s->h);
         goto exitfn;
@@ -967,7 +930,7 @@ static void chk_attached_config(session_t *s){
         ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" is not string", s->h);
         goto exitfn;
     }
-    msgpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
+    cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
     ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
 
     save_flash_config();
@@ -991,7 +954,7 @@ static int process_login_frame(session_t *s) {
 
     logout_session(s);
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = msgpack_map_search(&upc, "d");
+    int r = cw_unpack_map_search(&upc, "d");
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1020,8 +983,8 @@ static int process_login_frame(session_t *s) {
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "n");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "n");
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining nonce seed: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1058,7 +1021,7 @@ static int process_login_frame(session_t *s) {
 
     // Process Login data
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    r = msgpack_map_search(&upc, "t");
+    r = cw_unpack_map_search(&upc, "t");
     if (r){
         ESP_LOGE("LOGIN", "[%d] \"t\" field  not present: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1070,14 +1033,14 @@ static int process_login_frame(session_t *s) {
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if (msgpack_cmp_str(&upc, "l") != 0) {
+    if (cw_unpack_cmp_str(&upc, "l") != 0) {
         ESP_LOGE("LOGIN", "[%d] command is not \"l\"", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "u");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "u");
     if (r) {
         ESP_LOGE("LOGIN", "[%d] \"u\" field not present: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1092,8 +1055,8 @@ static int process_login_frame(session_t *s) {
     s->user = upc.item.as.i64;
     ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "l");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "l");
     if (!r) {
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_ARRAY && upc.item.as.array.size == 2) {
@@ -1110,8 +1073,8 @@ static int process_login_frame(session_t *s) {
         }
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "uk");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "uk");
     if (r){
         ESP_LOGE("LOGIN", "[%d] \"uk\" field not present: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1134,8 +1097,8 @@ static int process_login_frame(session_t *s) {
         goto exitfn;
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "i");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "i");
     if (r){
         ESP_LOGE("LOGIN", "[%d] \"i\" field not present: %d", s->h, r);
         err = ERR_FRAME_INVALID;
@@ -1158,8 +1121,8 @@ static int process_login_frame(session_t *s) {
         goto exitfn;
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "v");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "v");
     if (r){
         ESP_LOGE("LOGIN", "[%d] \"v\" field not present: %d", s->h, r);
         err = ERR_FRAME_INVALID;
@@ -1222,7 +1185,7 @@ static int do_cmd_ts(session_t *s){
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = msgpack_map_search(&upc, "ts");
+    int r = cw_unpack_map_search(&upc, "ts");
     if (r == 0){
         cw_unpack_next(&upc);
         if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
@@ -1282,14 +1245,14 @@ static int do_cmd_fi(session_t *s){
     s->ota_lock = true;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = msgpack_map_search(&upc, "fu");
+    int r = cw_unpack_map_search(&upc, "fu");
     if(r) {
         err = ERR_PERMISSION_DENIED;
         goto exitfn_fail;
     }
     back_upc = upc;
 
-    r = msgpack_map_search(&upc, "uv");
+    r = cw_unpack_map_search(&upc, "uv");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"uv\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1304,7 +1267,7 @@ static int do_cmd_fi(session_t *s){
     update = upc.item.as.u64;
 
     upc = back_upc;
-    r = msgpack_map_search(&upc, "ha");
+    r = cw_unpack_map_search(&upc, "ha");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"ha\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1324,7 +1287,7 @@ static int do_cmd_fi(session_t *s){
     const uint8_t *hash = upc.item.as.bin.start;
 
     upc = back_upc;
-    r = msgpack_map_search(&upc, "bo");
+    r = cw_unpack_map_search(&upc, "bo");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"bo\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1337,10 +1300,10 @@ static int do_cmd_fi(session_t *s){
         goto exitfn_fail;
     }
     char board[64];
-    msgpack_cstr(&upc, board, sizeof(board));
+    cw_unpack_cstr(&upc, board, sizeof(board));
 
     upc = back_upc;
-    r = msgpack_map_search(&upc, "pr");
+    r = cw_unpack_map_search(&upc, "pr");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"pr\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1353,10 +1316,10 @@ static int do_cmd_fi(session_t *s){
         goto exitfn_fail;
     }
     char product[64];
-    msgpack_cstr(&upc, product, sizeof(product));
+    cw_unpack_cstr(&upc, product, sizeof(product));
 
     upc = back_upc;
-    r = msgpack_map_search(&upc, "sz");
+    r = cw_unpack_map_search(&upc, "sz");
     if(r) {
         ESP_LOGE("CMD", "[%d] \"sz\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1442,7 +1405,7 @@ static int do_cmd_fw(session_t *s){
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = msgpack_map_search(&upc, "d");
+    int r = cw_unpack_map_search(&upc, "d");
     if (r) {
         ESP_LOGE("CMD", "[%d] \"d\" entry not pressent", s->h);
         err = ERR_INVALID_PARAMS;
@@ -1519,7 +1482,7 @@ static int process_cmd_frame(session_t *s) {
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = msgpack_map_search(&upc, "d");
+    int r = cw_unpack_map_search(&upc, "d");
     if (r){
         ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1546,7 +1509,7 @@ static int process_cmd_frame(session_t *s) {
     inc_nonce(s->nonce);
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    r = msgpack_map_search(&upc, "t");
+    r = cw_unpack_map_search(&upc, "t");
     if (r){
         ESP_LOGE("CMD", "[%d] Cmd object hasn't \"t\" entry", s->h);
         ret = ERR_FRAME_INVALID;
@@ -1558,7 +1521,7 @@ static int process_cmd_frame(session_t *s) {
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    msgpack_cstr(&upc, cmd_str, sizeof(cmd_str));
+    cw_unpack_cstr(&upc, cmd_str, sizeof(cmd_str));
     ESP_LOGI("CMD","[%d] Command: %s", s->h, cmd_str);
 
     // [q] command (QUIT)
@@ -1721,7 +1684,7 @@ static int cmd_cb(session_t *s) {
     cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
     cw_unpack_context upc;
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = msgpack_map_search(&upc, "t");
+    int r = cw_unpack_map_search(&upc, "t");
     if (r){
         ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
@@ -1733,13 +1696,13 @@ static int cmd_cb(session_t *s) {
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, msgpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, cw_unpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
 
-    if (msgpack_cmp_str(&upc, "i") == 0) {
+    if (cw_unpack_cmp_str(&upc, "i") == 0) {
         ret = process_info_frame(s);
-    } else if (msgpack_cmp_str(&upc, "l") == 0) {
+    } else if (cw_unpack_cmp_str(&upc, "l") == 0) {
         ret = process_login_frame(s);
-    } else if (msgpack_cmp_str(&upc, "c") == 0) {
+    } else if (cw_unpack_cmp_str(&upc, "c") == 0) {
         ret = process_cmd_frame(s);
     } else {
         ret = ERR_FRAME_UNKNOWN;
@@ -1915,7 +1878,7 @@ static esp_err_t load_flash_config() {
     // Translate from msgpack to config struct
     cw_unpack_context_init(&upc, cfg_buf, sizeof(cfg_buf), NULL);
     int r;
-    r = msgpack_map_search(&upc, "fv");
+    r = cw_unpack_map_search(&upc, "fv");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
@@ -1927,8 +1890,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"fv\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "kv");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "kv");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
@@ -1940,8 +1903,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"kv\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "bc");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "bc");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
@@ -1953,8 +1916,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"bc\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "cf");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "cf");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
@@ -1966,8 +1929,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"cf\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "sk");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "sk");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
@@ -1979,8 +1942,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"sk\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "pk");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "pk");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
@@ -1992,8 +1955,8 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"pk\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "id");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "id");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
@@ -2005,12 +1968,12 @@ static esp_err_t load_flash_config() {
         ESP_LOGE("CONFIG", "\"id\" field not found");
     }
 
-    msgpack_restore(&upc);
-    r = msgpack_map_search(&upc, "tz");
+    cw_unpack_restore(&upc);
+    r = cw_unpack_map_search(&upc, "tz");
     if (!r){
         cw_unpack_next(&upc);
         if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_STR) {
-            msgpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
+            cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
         } else {
             ESP_LOGE("CONFIG", "invalid \"tz\" field");
         }

@@ -546,9 +546,12 @@ static int chk_time_res_2(session_t *s, const char *field){
         ret = 2;
         goto exitfn;
     }
-    int last_level = -1;
-    bool match = false;
+    
+    bool skip_branch = false;
+    bool allow_match = false;
     bool allow_rules = false;
+    bool deny_match = false;
+
     for(int i = upc.item.as.array.size; i > 0; i--) {
         cw_unpack_next(&upc);
         if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_ARRAY)) {
@@ -569,19 +572,28 @@ static int chk_time_res_2(session_t *s, const char *field){
             ret = 2;
             goto exitfn;
         }
-        int level = upc.item.as.u64;
-        if (last_level == -1) {
-            last_level = level;
+        bool start_branch = (upc.item.as.u64 & 2) != 0;
+        bool start_ruleset = (upc.item.as.u64 & 1) != 0;
+
+        if (start_branch) {
+            skip_branch = false;
+            allow_rules = false;
+            allow_match = false;
+            deny_match = false;
         }
-        if (level != last_level) {
-            last_level = level;
-            if (allow_rules){
-                if (match) {
-                    match = false;
+
+        if (skip_branch) {
+            goto continue_next;
+        }
+
+        if (start_ruleset) {
+            if (allow_rules) {
+                if (allow_match) {
+                    allow_match = false;
                     allow_rules = false;
                 } else {
-                    ret = 1;
-                    goto exitfn;
+                    skip_branch = true;
+                    goto continue_next;
                 }
             }
         }
@@ -594,6 +606,7 @@ static int chk_time_res_2(session_t *s, const char *field){
             goto exitfn;
         }
         bool allow = (upc.item.as.u64 != 0);
+  
         if (allow) {
             allow_rules = true;
         }
@@ -657,15 +670,17 @@ static int chk_time_res_2(session_t *s, const char *field){
             }
             uint64_t to = upc.item.as.u64;
             if ((min_now >= from) && (min_now <= to)){
-                match = true;
-                if (!allow) {
-                    ret = 1;
-                    goto exitfn;
+                if (allow) {
+                    allow_match = true;
+                } else {
+                    deny_match = true;
                 }
-                goto continue_next;
+                break;
             }
         }
-
+        if (deny_match) {
+            skip_branch = true;
+        }
 continue_next:
         while (left) {
             cw_unpack_next(&upc);
@@ -673,12 +688,8 @@ continue_next:
         }
     }
 
-    if (allow_rules) {
-       if (match) {
-            ret = 0;
-       } else  {
-            ret = 1;       
-       }
+    if (deny_match || (allow_rules && !allow_match)) {
+        ret = 1;
     } else {
         ret = 0;
     }

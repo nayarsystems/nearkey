@@ -576,6 +576,9 @@ static int chk_time_res_2(session_t *s, const char *field){
         bool start_ruleset = (upc.item.as.u64 & 1) != 0;
 
         if (start_branch) {
+            if (skip_branch) {
+                // Check last branch result
+            }
             skip_branch = false;
             allow_rules = false;
             allow_match = false;

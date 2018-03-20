@@ -550,7 +550,7 @@ static int chk_time_res_2(session_t *s, const char *field){
     bool skip_branch = false;
     bool allow_match = false;
     bool allow_rules = false;
-    bool deny_match = false;
+    bool deny_match = true; // Start with previous branch denied
 
     for(int i = upc.item.as.array.size; i > 0; i--) {
         cw_unpack_next(&upc);
@@ -576,13 +576,16 @@ static int chk_time_res_2(session_t *s, const char *field){
         bool start_ruleset = (upc.item.as.u64 & 1) != 0;
 
         if (start_branch) {
-            if (skip_branch) {
-                // Check last branch result
+            if (deny_match || (allow_rules && !allow_match)) {
+                // Previous branch denied. Reset status and evaluate current branch
+                skip_branch = false;
+                allow_rules = false;
+                allow_match = false;
+                deny_match = false;
+            } else {
+                // Previous branch allowed. Stop processing branches
+                break; 
             }
-            skip_branch = false;
-            allow_rules = false;
-            allow_match = false;
-            deny_match = false;
         }
 
         if (skip_branch) {
@@ -592,9 +595,11 @@ static int chk_time_res_2(session_t *s, const char *field){
         if (start_ruleset) {
             if (allow_rules) {
                 if (allow_match) {
+                    // Previous rule set allowed. Process current ruleset
                     allow_match = false;
                     allow_rules = false;
                 } else {
+                    // Previous rule set denied. Skip current branch
                     skip_branch = true;
                     goto continue_next;
                 }

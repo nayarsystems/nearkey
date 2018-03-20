@@ -483,7 +483,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             goto exitfn;
         }
 
-        if (chk_time_res_2(s, "y") != 0 ){
+        if (chk_time_res_2(s, "z") != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }

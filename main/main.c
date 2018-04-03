@@ -911,44 +911,32 @@ static int append_egg(session_t *s, cw_pack_context *out) {
 }
 
 static void chk_attached_config(session_t *s){
-    cw_unpack_context upc, back_upc;
+    uint32_t cv = 0;
+    cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = cw_unpack_map_search(&upc, "cf");
     if(r) {
         goto exitfn;
     }
-    back_upc = upc;
 
-    r = cw_unpack_map_search(&upc, "cv");
+    r = cw_unpack_map_get_u32(&upc, "cv", &cv);
     if(r) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" entry not pressent", s->h);
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" %s", s->h, cw_unpack_map_strerr(r));
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" is not positive integer", s->h);
-        goto exitfn;
-    }
-    uint32_t cv = upc.item.as.u64;
+
     if (cv <= config.cfg_ver) {
         ESP_LOGI("ATTACHED_CONFIG", "[%d] Old config attached on key", s->h);
         goto exitfn;
     }
     config.cfg_ver = cv;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "tz");
+    r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), NULL);
     if(r) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" entry not pressent", s->h);
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" %s", s->h, cw_unpack_map_strerr(r));
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" is not string", s->h);
-        goto exitfn;
-    }
-    cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
     ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
 
     save_flash_config();

@@ -1779,8 +1779,8 @@ static esp_err_t load_flash_config() {
     }
     if(size != sizeof(cfg_buf)) {
         ESP_LOGW(LOG_TAG, "Config size mismatch!")
-        if(size > sizeof(config)) {
-            size = sizeof(config);
+        if(size > sizeof(cfg_buf)) {
+            size = sizeof(cfg_buf);
         }
     }
     err = nvs_get_blob(nvs_config_h, "config", cfg_buf, &size); // Get blob size
@@ -1790,113 +1790,49 @@ static esp_err_t load_flash_config() {
     }
     // Translate from msgpack to config struct
     cw_unpack_context_init(&upc, cfg_buf, sizeof(cfg_buf), NULL);
-    int r;
-    r = cw_unpack_map_search(&upc, "fv");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.fw_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"fv\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"fv\" field not found");
+    int r = cw_unpack_map_get_u32(&upc, "fv", &config.fw_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"fv\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "kv");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.key_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"kv\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"kv\" field not found");
+    r = cw_unpack_map_get_u64(&upc, "kv", &config.key_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"kv\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "bc");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.boot_cnt = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"bc\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"bc\" field not found");
+    r = cw_unpack_map_get_u32(&upc, "bc", &config.boot_cnt);
+    if (r){
+        ESP_LOGE("CONFIG", "\"bc\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "cf");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.cfg_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"cf\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"cf\" field not found");
+    r = cw_unpack_map_get_u32(&upc, "cf", &config.cfg_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"cf\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "sk");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.secret_key, upc.item.as.bin.start, sizeof(config.secret_key));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"sk\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"sk\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "sk", config.secret_key, sizeof(config.secret_key), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"sk\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "pk");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.public_key, upc.item.as.bin.start, sizeof(config.public_key));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"pk\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"pk\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "pk", config.public_key, sizeof(config.public_key), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"pk\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "id");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"id\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"id\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "id", config.vk_id, sizeof(config.vk_id), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"id\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "tz");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_STR) {
-            cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"tz\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"tz\" field not found");
+    r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"tz\" %s", cw_unpack_map_strerr(r));
     }
+
     if (strlen(config.tz_data) == 0){
         strcpy(config.tz_data, "UTC0");
     }
-
 
     ESP_LOGI(LOG_TAG, "Config loaded")
     err = ESP_OK;

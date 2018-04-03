@@ -122,6 +122,36 @@ int cw_unpack_map_get_u64(const cw_unpack_context *upcc, const char *key, uint64
     return 0;
 }
 
+int cw_unpack_map_get_size_t(const cw_unpack_context *upcc, const char *key, size_t *size_t_p) {
+    int ret = 0;
+    uint64_t val;
+
+    ret = cw_unpack_map_get_u64(upcc, key, &val);
+    if (ret != 0) return ret;
+    *size_t_p = (size_t)val;
+    return 0;
+}
+
+int cw_unpack_map_get_int(const cw_unpack_context *upcc, const char *key, int *int_p) {
+    int ret = 0;
+    int64_t val;
+
+    ret = cw_unpack_map_get_i64(upcc, key, &val);
+    if (ret != 0) return ret;
+    *int_p = (int)val;
+    return 0;
+}
+
+int cw_unpack_map_get_uint(const cw_unpack_context *upcc, const char *key, unsigned int *uint_p) {
+    int ret = 0;
+    uint64_t val;
+
+    ret = cw_unpack_map_get_u64(upcc, key, &val);
+    if (ret != 0) return ret;
+    *uint_p = (unsigned int)val;
+    return 0;
+}
+
 int cw_unpack_map_get_i32(const cw_unpack_context *upcc, const char *key, int32_t *i32p) {
     int ret = 0;
     int64_t val;

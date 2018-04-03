@@ -22,4 +22,7 @@ int cw_unpack_map_get_i16(const cw_unpack_context *upcc, const char *key, int16_
 int cw_unpack_map_get_u16(const cw_unpack_context *upcc, const char *key, uint16_t *u16p);
 int cw_unpack_map_get_i8(const cw_unpack_context *upcc, const char *key, int8_t *i8p);
 int cw_unpack_map_get_u8(const cw_unpack_context *upcc, const char *key, uint8_t *u8p);
+int cw_unpack_map_get_size_t(const cw_unpack_context *upcc, const char *key, size_t *size_t_p);
+int cw_unpack_map_get_int(const cw_unpack_context *upcc, const char *key, int *int_p);
+int cw_unpack_map_get_uint(const cw_unpack_context *upcc, const char *key, unsigned int *uint_p);
 char *cw_unpack_map_strerr(int err);

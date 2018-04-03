@@ -1202,7 +1202,11 @@ static int do_cmd_fs(session_t *s){
 static int do_cmd_fi(session_t *s){
     int err = 0;
     uint32_t update = 0;
-    cw_unpack_context upc, back_upc;
+    uint8_t *hash = NULL;
+    char board[64];
+    char product[64];
+    size_t sz = 0, size = 0;
+    cw_unpack_context upc;
 
     if (ota_lock) {
         err= ERR_FLASH_LOCKED;
@@ -1212,93 +1216,52 @@ static int do_cmd_fi(session_t *s){
     s->ota_lock = true;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+
     int r = cw_unpack_map_search(&upc, "fu");
     if(r) {
         err = ERR_PERMISSION_DENIED;
         goto exitfn_fail;
     }
-    back_upc = upc;
 
-    r = cw_unpack_map_search(&upc, "uv");
+    r = cw_unpack_map_get_u32(&upc, "uv", &update);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"uv\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"uv\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CMD", "[%d] \"uv\" is not positive integer", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    update = upc.item.as.u64;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "ha");
+    r = cw_unpack_map_get_bufptr(&upc, "ha", &hash, &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"ha\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"ha\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
-        ESP_LOGE("CMD", "[%d] \"ha\" is not binary array type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    if (upc.item.as.bin.length != sizeof(ota.sha256sum)) { 
+    if (sz != sizeof(ota.sha256sum)) { 
         ESP_LOGE("CMD", "[%d] \"ha\" hash length missmatch", s->h);
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    const uint8_t *hash = upc.item.as.bin.start;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "bo");
+    r = cw_unpack_map_get_str(&upc, "bo", board, sizeof(board), &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"bo\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"bo\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] \"bo\" is not string type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    char board[64];
-    cw_unpack_cstr(&upc, board, sizeof(board));
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "pr");
+    r = cw_unpack_map_get_str(&upc, "pr", product, sizeof(product), &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"pr\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"pr\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] \"pr\" is not string type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    char product[64];
-    cw_unpack_cstr(&upc, product, sizeof(product));
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "sz");
+    r = cw_unpack_map_get_size_t(&upc, "sz", &size);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"sz\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"sz\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CMD", "[%d] \"sz\" is not positive integer", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    size_t size = upc.item.as.u64;
 
     if (update <= FW_VER) {
         err = ERR_FLASH_OUTDATED;

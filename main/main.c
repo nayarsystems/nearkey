@@ -1323,6 +1323,8 @@ static int do_cmd_fw(session_t *s){
     int err = 0;
     uint32_t update = ota.started_update;
     cw_unpack_context upc;
+    uint8_t *buf = NULL;
+    size_t bsize = 0;
 
     if (!s->ota_lock){
         err = ERR_FLASH_NOTOWNED;
@@ -1335,26 +1337,20 @@ static int do_cmd_fw(session_t *s){
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &bsize);
     if (r) {
-        ESP_LOGE("CMD", "[%d] \"d\" entry not pressent", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn;
-    }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
-        ESP_LOGE("CMD", "[%d] \"d\" is not bin/str type", s->h);
+        ESP_LOGE("CMD", "[%d] \"d\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn;
     }
 
-    if (esp_ota_write(ota.handle, upc.item.as.bin.start, upc.item.as.bin.length) != ESP_OK) {
+    if (esp_ota_write(ota.handle, buf, bsize) != ESP_OK) {
         err = ERR_FLASH_PARTERROR;
         reset_ota();
         goto exitfn;
     }
-    mbedtls_sha256_update(&ota.sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
-    ota.offset += upc.item.as.bin.length;
+    mbedtls_sha256_update(&ota.sha256_ctx, buf, bsize);
+    ota.offset += bsize;
 
     if (ota.offset > ota.size) {
         err = ERR_FLASH_OVERRUN;

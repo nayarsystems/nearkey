@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <string.h>
 
+#define CW_UNPACK_MAP_ERR_MISSING_KEY -1
+#define CW_UNPACK_MAP_ERR_INVALID_TYPE -2
+
 void cw_pack_cstr(cw_pack_context *pc, const char *str);
 void cw_unpack_restore(cw_unpack_context *upc);
 char *cw_unpack_cstr(cw_unpack_context *upc, char *buf, size_t bsize);
@@ -19,3 +22,4 @@ int cw_unpack_map_get_i16(const cw_unpack_context *upcc, const char *key, int16_
 int cw_unpack_map_get_u16(const cw_unpack_context *upcc, const char *key, uint16_t *u16p);
 int cw_unpack_map_get_i8(const cw_unpack_context *upcc, const char *key, int8_t *i8p);
 int cw_unpack_map_get_u8(const cw_unpack_context *upcc, const char *key, uint8_t *u8p);
+char *cw_unpack_map_strerr(int err);

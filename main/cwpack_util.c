@@ -69,7 +69,7 @@ int cw_unpack_map_get_bufptr(const cw_unpack_context *upcc, const char *key, uin
     if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN)) {
         return -2;
     }
-    *buf = upc.item.as.bin.start;
+    *buf = (uint8_t *)upc.item.as.bin.start;
     if (bsize != NULL) *bsize = upc.item.as.bin.length;
     return 0;
 }
@@ -182,4 +182,12 @@ int cw_unpack_map_get_u8(const cw_unpack_context *upcc, const char *key, uint8_t
     return 0;
 }
 
-
+char *cw_unpack_map_strerr(int err) {
+    switch (err) {
+        case CW_UNPACK_MAP_ERR_MISSING_KEY:
+            return "missing key";
+        case CW_UNPACK_MAP_ERR_INVALID_TYPE:
+            return "invalid type";
+    }
+    return "unknown error";
+}

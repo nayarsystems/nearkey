@@ -969,52 +969,43 @@ static void logout_session(session_t *s) {
 static int process_login_frame(session_t *s) {
     int ret = 0, err = 0;
     cw_unpack_context upc;
+    uint64_t tmp_u64;
+    char sbuf[80];
+    uint8_t *buf;
+    size_t buf_sz;
 
     logout_session(s);
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &buf_sz);
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for encrypted blob", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
+    if ( buf_sz <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
         ESP_LOGE("LOGIN", "[%d] encrypted blob too short", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    size_t blob_sz = upc.item.as.bin.length - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
+    size_t blob_sz = buf_sz - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
     SETPTR(s->login_data, malloc(blob_sz));
     s->login_len = blob_sz;
     if (crypto_box_open_easy_afternm(s->login_data,
-            upc.item.as.bin.start + crypto_box_NONCEBYTES,
-            upc.item.as.bin.length - crypto_box_NONCEBYTES,
-            upc.item.as.bin.start,
+            buf + crypto_box_NONCEBYTES,
+            buf_sz - crypto_box_NONCEBYTES,
+            buf,
             ca_shared) != 0) {
         ESP_LOGE("LOGIN", "[%d] Invalid signature", s->h);
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "n");
+    r = cw_unpack_map_get_bufptr(&upc, "n", &buf, &buf_sz);
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining nonce seed: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for nonce seed", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length < 16) {
+    if (buf_sz < 16) {
         ESP_LOGE("LOGIN", "[%d] Invalid nonce seed size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
@@ -1025,7 +1016,7 @@ static int process_login_frame(session_t *s) {
 
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_update(&sha256_ctx, buf, buf_sz);
     mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
     mbedtls_sha256_finish(&sha256_ctx, s->rnonce);
     mbedtls_sha256_free(&sha256_ctx);
@@ -1033,47 +1024,31 @@ static int process_login_frame(session_t *s) {
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
     mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
-    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_update(&sha256_ctx, buf, buf_sz);
     mbedtls_sha256_finish(&sha256_ctx, s->nonce);
     mbedtls_sha256_free(&sha256_ctx);
 
     // Process Login data
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    r = cw_unpack_map_search(&upc, "t");
+    r = cw_unpack_map_get_str(&upc, "t", sbuf, sizeof(sbuf), &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"t\" field  not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"t\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"t\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if (cw_unpack_cmp_str(&upc, "l") != 0) {
+    if (strcmp(sbuf, "l") != 0) {
         ESP_LOGE("LOGIN", "[%d] command is not \"l\"", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "u");
+    r = cw_unpack_map_get_i32(&upc, "u", &s->user);
     if (r) {
-        ESP_LOGE("LOGIN", "[%d] \"u\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"u\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER && upc.item.type != CWP_ITEM_NEGATIVE_INTEGER)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"u\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    s->user = upc.item.as.i64;
     ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
 
-    cw_unpack_restore(&upc);
     r = cw_unpack_map_search(&upc, "l");
     if (!r) {
         cw_unpack_next(&upc);
@@ -1090,80 +1065,60 @@ static int process_login_frame(session_t *s) {
             ESP_LOGE("LOGIN", "[%d] malformed \"l\" field", s->h);    
         }
     }
-
     cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "uk");
+
+    r = cw_unpack_map_get_bufptr(&upc, "uk", &buf, &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"uk\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"uk\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length != crypto_box_PUBLICKEYBYTES) {
+    if ( buf_sz != crypto_box_PUBLICKEYBYTES) {
         ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(crypto_box_beforenm(s->shared_key, upc.item.as.bin.start, config.secret_key) != 0) {
+    if(crypto_box_beforenm(s->shared_key, buf, config.secret_key) != 0) {
         ESP_LOGE("LOGIN", "Error computing user shared key");
         ret = ERR_APP_ERROR;
         goto exitfn;
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "i");
+    r = cw_unpack_map_get_bufptr(&upc, "i", &buf, &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"i\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"i\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field type", s->h);
-        err = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length != sizeof(config.vk_id)) {
+    if ( buf_sz != sizeof(config.vk_id)) {
         ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field size", s->h);
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(memcmp(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id)) != 0) {
+    if(memcmp(config.vk_id, buf, sizeof(config.vk_id)) != 0) {
         ESP_LOGE("LOGIN", "[%d] \"i\" field don't match", s->h);
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "v");
+    r = cw_unpack_map_get_u64(&upc, "v", &tmp_u64);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"v\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"v\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for \"v\" field", s->h);
-        err = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if (upc.item.as.u64 < config.key_ver) {
+    if (tmp_u64 < config.key_ver) {
         err = ERR_OLD_KEY_VERSION;
         log_add(s, LOG_OP_ERROR, err, 0);
         goto exitfn;
     }
-    if (upc.item.as.u64 > config.key_ver) {
+    if (tmp_u64 > config.key_ver) {
         if (chk_ver_upgrade(s) == 0) {
-            ESP_LOGI("LOGIN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
-            config.key_ver = upc.item.as.u64;
+            ESP_LOGI("LOGIN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+            config.key_ver = tmp_u64;
             save_flash_config();
         } else {
-            ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
+            ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
         }
     }
     if(chk_time()){
@@ -1199,21 +1154,16 @@ exitfn:
 
 static int do_cmd_ts(session_t *s){
     int ret = 0;
+    uint64_t tmp_u64;
     struct timeval tv={0};
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "ts");
+    int r = cw_unpack_map_get_u64(&upc, "ts", &tmp_u64);
     if (r == 0){
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-            ESP_LOGE("CMD", "[%d] Entry \"ts\" isn't positive integer type", s->h);
-            ret = ERR_INVALID_PARAMS;
-            goto exitfn;
-        }
-        tv.tv_sec = (time_t) upc.item.as.u64;
+        tv.tv_sec = (time_t) tmp_u64;
         settimeofday(&tv, NULL);
-        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, upc.item.as.u64)
+        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64)
 
 #ifdef RTC_DRIVER
         systohc();
@@ -1223,7 +1173,6 @@ static int do_cmd_ts(session_t *s){
     cw_pack_map_size(&s->pc_resp, 1);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
     print_current_time(); 
-exitfn:
     return ret;
 }
 

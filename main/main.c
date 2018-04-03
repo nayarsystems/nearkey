@@ -1398,6 +1398,8 @@ exitfn:
 
 static int process_cmd_frame(session_t *s) {
     int ret = 0, err = 0;
+    uint8_t *buf = NULL;
+    size_t sz;
     cw_unpack_context upc;
     char cmd_str[32];
 
@@ -1408,22 +1410,14 @@ static int process_cmd_frame(session_t *s) {
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &sz);
     if (r){
-        ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %d", s->h, r);
+        ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("CMD", "[%d] Invalid encrypted blob type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    const uint8_t *start = upc.item.as.bin.start;
-    size_t sz = upc.item.as.bin.length;
     if (crypto_box_open_easy_afternm(s->rx_buffer, //Overwrite rx_buffer
-            start,
+            buf,
             sz,
             s->nonce,
             s->shared_key) != 0) {
@@ -1435,19 +1429,12 @@ static int process_cmd_frame(session_t *s) {
     inc_nonce(s->nonce);
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    r = cw_unpack_map_search(&upc, "t");
+    r = cw_unpack_map_get_str(&upc, "t", cmd_str, sizeof(cmd_str), &sz);
     if (r){
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't \"t\" entry", s->h);
+        ESP_LOGE("CMD", "[%d] \"t\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] Entry \"t\" isn't string type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    cw_unpack_cstr(&upc, cmd_str, sizeof(cmd_str));
     ESP_LOGI("CMD","[%d] Command: %s", s->h, cmd_str);
 
     // [q] command (QUIT)

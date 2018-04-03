@@ -1591,31 +1591,27 @@ static int process_info_frame(session_t *s){
 
 static int cmd_cb(session_t *s) {
     int ret = 0;
-    char ch_buff[64];
+    char sbuf[64];
+    cw_unpack_context upc;
 
     cw_pack_context_init(&s->pc_resp, s->resp_buffer, RESP_BUFFER_SIZE, NULL); // Init command response context
     cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
-    cw_unpack_context upc;
+ 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "t");
+    int r = cw_unpack_map_get_str(&upc, "t", sbuf, sizeof(sbuf), NULL);
     if (r){
-        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", s->h, r);
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command field type: %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, cw_unpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
 
-    if (cw_unpack_cmp_str(&upc, "i") == 0) {
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, sbuf);
+
+    if (strcmp(sbuf, "i") == 0) {
         ret = process_info_frame(s);
-    } else if (cw_unpack_cmp_str(&upc, "l") == 0) {
+    } else if (strcmp(sbuf, "l") == 0) {
         ret = process_login_frame(s);
-    } else if (cw_unpack_cmp_str(&upc, "c") == 0) {
+    } else if (strcmp(sbuf, "c") == 0) {
         ret = process_cmd_frame(s);
     } else {
         ret = ERR_FRAME_UNKNOWN;

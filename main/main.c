@@ -774,26 +774,21 @@ exitfn:
 
 static int chk_ver_upgrade(session_t *s) {
     int ret = 0;
+    uint64_t until = 0;
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = cw_unpack_map_search(&upc, "w");
+
+    int r = cw_unpack_map_get_u64(&upc, "w", &until);
     if (r){
-        ret = 0;
+        if (r == CW_UNPACK_MAP_ERR_MISSING_KEY) ret = 0; else ret = 2;
         goto exitfn; // If not field presence, allow instant version upgrades
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CHK_VER_UPGRADE", "[%d] Invalid timestamp type", s->h);
-        ret = 2;
-        goto exitfn;
-    }
-    time_t now = time(NULL);
-    if (now < upc.item.as.u64) {
+    if (time(NULL) < until) {
         ret = 1;
         goto exitfn;
     }
-
+    
 exitfn:
     return ret;
 }

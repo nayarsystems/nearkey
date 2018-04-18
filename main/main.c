@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 28
+#define FW_VER 29
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -16,6 +16,7 @@
 #include "cwpack_util.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "esp_task_wdt.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_event_loop.h"
@@ -774,26 +775,21 @@ exitfn:
 
 static int chk_ver_upgrade(session_t *s) {
     int ret = 0;
+    uint64_t until = 0;
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = cw_unpack_map_search(&upc, "w");
+
+    int r = cw_unpack_map_get_u64(&upc, "w", &until);
     if (r){
-        ret = 0;
+        if (r == CW_UNPACK_MAP_ERR_MISSING_KEY) ret = 0; else ret = 2;
         goto exitfn; // If not field presence, allow instant version upgrades
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CHK_VER_UPGRADE", "[%d] Invalid timestamp type", s->h);
-        ret = 2;
-        goto exitfn;
-    }
-    time_t now = time(NULL);
-    if (now < upc.item.as.u64) {
+    if (time(NULL) < until) {
         ret = 1;
         goto exitfn;
     }
-
+    
 exitfn:
     return ret;
 }
@@ -911,44 +907,32 @@ static int append_egg(session_t *s, cw_pack_context *out) {
 }
 
 static void chk_attached_config(session_t *s){
-    cw_unpack_context upc, back_upc;
+    uint32_t cv = 0;
+    cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = cw_unpack_map_search(&upc, "cf");
     if(r) {
         goto exitfn;
     }
-    back_upc = upc;
 
-    r = cw_unpack_map_search(&upc, "cv");
+    r = cw_unpack_map_get_u32(&upc, "cv", &cv);
     if(r) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" entry not pressent", s->h);
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" %s", s->h, cw_unpack_map_strerr(r));
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" is not positive integer", s->h);
-        goto exitfn;
-    }
-    uint32_t cv = upc.item.as.u64;
+
     if (cv <= config.cfg_ver) {
         ESP_LOGI("ATTACHED_CONFIG", "[%d] Old config attached on key", s->h);
         goto exitfn;
     }
     config.cfg_ver = cv;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "tz");
+    r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), NULL);
     if(r) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" entry not pressent", s->h);
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" %s", s->h, cw_unpack_map_strerr(r));
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" is not string", s->h);
-        goto exitfn;
-    }
-    cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
     ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
 
     save_flash_config();
@@ -969,52 +953,43 @@ static void logout_session(session_t *s) {
 static int process_login_frame(session_t *s) {
     int ret = 0, err = 0;
     cw_unpack_context upc;
+    uint64_t tmp_u64;
+    char sbuf[80];
+    uint8_t *buf;
+    size_t buf_sz;
 
     logout_session(s);
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &buf_sz);
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for encrypted blob", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
+    if ( buf_sz <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 64)) {
         ESP_LOGE("LOGIN", "[%d] encrypted blob too short", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    size_t blob_sz = upc.item.as.bin.length - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
+    size_t blob_sz = buf_sz - (crypto_box_NONCEBYTES + crypto_box_MACBYTES);
     SETPTR(s->login_data, malloc(blob_sz));
     s->login_len = blob_sz;
     if (crypto_box_open_easy_afternm(s->login_data,
-            upc.item.as.bin.start + crypto_box_NONCEBYTES,
-            upc.item.as.bin.length - crypto_box_NONCEBYTES,
-            upc.item.as.bin.start,
+            buf + crypto_box_NONCEBYTES,
+            buf_sz - crypto_box_NONCEBYTES,
+            buf,
             ca_shared) != 0) {
         ESP_LOGE("LOGIN", "[%d] Invalid signature", s->h);
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "n");
+    r = cw_unpack_map_get_bufptr(&upc, "n", &buf, &buf_sz);
     if (r){
         ESP_LOGE("LOGIN", "[%d] Error obtaining nonce seed: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for nonce seed", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length < 16) {
+    if (buf_sz < 16) {
         ESP_LOGE("LOGIN", "[%d] Invalid nonce seed size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
@@ -1025,7 +1000,7 @@ static int process_login_frame(session_t *s) {
 
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
-    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_update(&sha256_ctx, buf, buf_sz);
     mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
     mbedtls_sha256_finish(&sha256_ctx, s->rnonce);
     mbedtls_sha256_free(&sha256_ctx);
@@ -1033,47 +1008,31 @@ static int process_login_frame(session_t *s) {
     mbedtls_sha256_init(&sha256_ctx);
     mbedtls_sha256_starts(&sha256_ctx, 0);
     mbedtls_sha256_update(&sha256_ctx, s->seed, SEED_SIZE);
-    mbedtls_sha256_update(&sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
+    mbedtls_sha256_update(&sha256_ctx, buf, buf_sz);
     mbedtls_sha256_finish(&sha256_ctx, s->nonce);
     mbedtls_sha256_free(&sha256_ctx);
 
     // Process Login data
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    r = cw_unpack_map_search(&upc, "t");
+    r = cw_unpack_map_get_str(&upc, "t", sbuf, sizeof(sbuf), &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"t\" field  not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"t\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"t\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if (cw_unpack_cmp_str(&upc, "l") != 0) {
+    if (strcmp(sbuf, "l") != 0) {
         ESP_LOGE("LOGIN", "[%d] command is not \"l\"", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "u");
+    r = cw_unpack_map_get_i32(&upc, "u", &s->user);
     if (r) {
-        ESP_LOGE("LOGIN", "[%d] \"u\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"u\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_POSITIVE_INTEGER && upc.item.type != CWP_ITEM_NEGATIVE_INTEGER)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"u\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    s->user = upc.item.as.i64;
     ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
 
-    cw_unpack_restore(&upc);
     r = cw_unpack_map_search(&upc, "l");
     if (!r) {
         cw_unpack_next(&upc);
@@ -1090,80 +1049,60 @@ static int process_login_frame(session_t *s) {
             ESP_LOGE("LOGIN", "[%d] malformed \"l\" field", s->h);    
         }
     }
-
     cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "uk");
+
+    r = cw_unpack_map_get_bufptr(&upc, "uk", &buf, &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"uk\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"uk\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length != crypto_box_PUBLICKEYBYTES) {
+    if ( buf_sz != crypto_box_PUBLICKEYBYTES) {
         ESP_LOGE("LOGIN", "[%d] Invalid \"uk\" field size", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(crypto_box_beforenm(s->shared_key, upc.item.as.bin.start, config.secret_key) != 0) {
+    if(crypto_box_beforenm(s->shared_key, buf, config.secret_key) != 0) {
         ESP_LOGE("LOGIN", "Error computing user shared key");
         ret = ERR_APP_ERROR;
         goto exitfn;
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "i");
+    r = cw_unpack_map_get_bufptr(&upc, "i", &buf, &buf_sz);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"i\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"i\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field type", s->h);
-        err = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if ( upc.item.as.bin.length != sizeof(config.vk_id)) {
+    if ( buf_sz != sizeof(config.vk_id)) {
         ESP_LOGE("LOGIN", "[%d] Invalid \"i\" field size", s->h);
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if(memcmp(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id)) != 0) {
+    if(memcmp(config.vk_id, buf, sizeof(config.vk_id)) != 0) {
         ESP_LOGE("LOGIN", "[%d] \"i\" field don't match", s->h);
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "v");
+    r = cw_unpack_map_get_u64(&upc, "v", &tmp_u64);
     if (r){
-        ESP_LOGE("LOGIN", "[%d] \"v\" field not present: %d", s->h, r);
+        ESP_LOGE("LOGIN", "[%d] \"v\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("LOGIN", "[%d] Invalid type for \"v\" field", s->h);
-        err = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    if (upc.item.as.u64 < config.key_ver) {
+    if (tmp_u64 < config.key_ver) {
         err = ERR_OLD_KEY_VERSION;
         log_add(s, LOG_OP_ERROR, err, 0);
         goto exitfn;
     }
-    if (upc.item.as.u64 > config.key_ver) {
+    if (tmp_u64 > config.key_ver) {
         if (chk_ver_upgrade(s) == 0) {
-            ESP_LOGI("LOGIN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
-            config.key_ver = upc.item.as.u64;
+            ESP_LOGI("LOGIN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+            config.key_ver = tmp_u64;
             save_flash_config();
         } else {
-            ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, upc.item.as.u64);
+            ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
         }
     }
     if(chk_time()){
@@ -1199,21 +1138,16 @@ exitfn:
 
 static int do_cmd_ts(session_t *s){
     int ret = 0;
+    uint64_t tmp_u64;
     struct timeval tv={0};
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "ts");
+    int r = cw_unpack_map_get_u64(&upc, "ts", &tmp_u64);
     if (r == 0){
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-            ESP_LOGE("CMD", "[%d] Entry \"ts\" isn't positive integer type", s->h);
-            ret = ERR_INVALID_PARAMS;
-            goto exitfn;
-        }
-        tv.tv_sec = (time_t) upc.item.as.u64;
+        tv.tv_sec = (time_t) tmp_u64;
         settimeofday(&tv, NULL);
-        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, upc.item.as.u64)
+        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64)
 
 #ifdef RTC_DRIVER
         systohc();
@@ -1223,7 +1157,6 @@ static int do_cmd_ts(session_t *s){
     cw_pack_map_size(&s->pc_resp, 1);
     cw_pack_cstr(&s->pc_resp, "ts"); cw_pack_unsigned(&s->pc_resp, time(NULL));
     print_current_time(); 
-exitfn:
     return ret;
 }
 
@@ -1253,7 +1186,11 @@ static int do_cmd_fs(session_t *s){
 static int do_cmd_fi(session_t *s){
     int err = 0;
     uint32_t update = 0;
-    cw_unpack_context upc, back_upc;
+    uint8_t *hash = NULL;
+    char board[64];
+    char product[64];
+    size_t sz = 0, size = 0;
+    cw_unpack_context upc;
 
     if (ota_lock) {
         err= ERR_FLASH_LOCKED;
@@ -1263,93 +1200,52 @@ static int do_cmd_fi(session_t *s){
     s->ota_lock = true;
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+
     int r = cw_unpack_map_search(&upc, "fu");
     if(r) {
         err = ERR_PERMISSION_DENIED;
         goto exitfn_fail;
     }
-    back_upc = upc;
 
-    r = cw_unpack_map_search(&upc, "uv");
+    r = cw_unpack_map_get_u32(&upc, "uv", &update);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"uv\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"uv\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CMD", "[%d] \"uv\" is not positive integer", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    update = upc.item.as.u64;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "ha");
+    r = cw_unpack_map_get_bufptr(&upc, "ha", &hash, &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"ha\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"ha\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
-        ESP_LOGE("CMD", "[%d] \"ha\" is not binary array type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    if (upc.item.as.bin.length != sizeof(ota.sha256sum)) { 
+    if (sz != sizeof(ota.sha256sum)) { 
         ESP_LOGE("CMD", "[%d] \"ha\" hash length missmatch", s->h);
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    const uint8_t *hash = upc.item.as.bin.start;
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "bo");
+    r = cw_unpack_map_get_str(&upc, "bo", board, sizeof(board), &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"bo\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"bo\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] \"bo\" is not string type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    char board[64];
-    cw_unpack_cstr(&upc, board, sizeof(board));
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "pr");
+    r = cw_unpack_map_get_str(&upc, "pr", product, sizeof(product), &sz);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"pr\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"pr\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] \"pr\" is not string type", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    char product[64];
-    cw_unpack_cstr(&upc, product, sizeof(product));
 
-    upc = back_upc;
-    r = cw_unpack_map_search(&upc, "sz");
+    r = cw_unpack_map_get_size_t(&upc, "sz", &size);
     if(r) {
-        ESP_LOGE("CMD", "[%d] \"sz\" entry not pressent", s->h);
+        ESP_LOGE("CMD", "[%d] \"sz\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn_fail;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-        ESP_LOGE("CMD", "[%d] \"sz\" is not positive integer", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn_fail;
-    }
-    size_t size = upc.item.as.u64;
 
     if (update <= FW_VER) {
         err = ERR_FLASH_OUTDATED;
@@ -1411,6 +1307,8 @@ static int do_cmd_fw(session_t *s){
     int err = 0;
     uint32_t update = ota.started_update;
     cw_unpack_context upc;
+    uint8_t *buf = NULL;
+    size_t bsize = 0;
 
     if (!s->ota_lock){
         err = ERR_FLASH_NOTOWNED;
@@ -1423,26 +1321,20 @@ static int do_cmd_fw(session_t *s){
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &bsize);
     if (r) {
-        ESP_LOGE("CMD", "[%d] \"d\" entry not pressent", s->h);
-        err = ERR_INVALID_PARAMS;
-        goto exitfn;
-    }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_BIN && upc.item.type != CWP_ITEM_STR)) {
-        ESP_LOGE("CMD", "[%d] \"d\" is not bin/str type", s->h);
+        ESP_LOGE("CMD", "[%d] \"d\" %s", s->h, cw_unpack_map_strerr(r));
         err = ERR_INVALID_PARAMS;
         goto exitfn;
     }
 
-    if (esp_ota_write(ota.handle, upc.item.as.bin.start, upc.item.as.bin.length) != ESP_OK) {
+    if (esp_ota_write(ota.handle, buf, bsize) != ESP_OK) {
         err = ERR_FLASH_PARTERROR;
         reset_ota();
         goto exitfn;
     }
-    mbedtls_sha256_update(&ota.sha256_ctx, upc.item.as.bin.start, upc.item.as.bin.length);
-    ota.offset += upc.item.as.bin.length;
+    mbedtls_sha256_update(&ota.sha256_ctx, buf, bsize);
+    ota.offset += bsize;
 
     if (ota.offset > ota.size) {
         err = ERR_FLASH_OVERRUN;
@@ -1490,6 +1382,8 @@ exitfn:
 
 static int process_cmd_frame(session_t *s) {
     int ret = 0, err = 0;
+    uint8_t *buf = NULL;
+    size_t sz;
     cw_unpack_context upc;
     char cmd_str[32];
 
@@ -1500,22 +1394,14 @@ static int process_cmd_frame(session_t *s) {
     }
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "d");
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &sz);
     if (r){
-        ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %d", s->h, r);
+        ESP_LOGE("CMD", "[%d] Error obtaining encrypted blob: %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_STR && upc.item.type != CWP_ITEM_BIN)) {
-        ESP_LOGE("CMD", "[%d] Invalid encrypted blob type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    const uint8_t *start = upc.item.as.bin.start;
-    size_t sz = upc.item.as.bin.length;
     if (crypto_box_open_easy_afternm(s->rx_buffer, //Overwrite rx_buffer
-            start,
+            buf,
             sz,
             s->nonce,
             s->shared_key) != 0) {
@@ -1527,19 +1413,12 @@ static int process_cmd_frame(session_t *s) {
     inc_nonce(s->nonce);
 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    r = cw_unpack_map_search(&upc, "t");
+    r = cw_unpack_map_get_str(&upc, "t", cmd_str, sizeof(cmd_str), &sz);
     if (r){
-        ESP_LOGE("CMD", "[%d] Cmd object hasn't \"t\" entry", s->h);
+        ESP_LOGE("CMD", "[%d] \"t\" %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE("CMD", "[%d] Entry \"t\" isn't string type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    cw_unpack_cstr(&upc, cmd_str, sizeof(cmd_str));
     ESP_LOGI("CMD","[%d] Command: %s", s->h, cmd_str);
 
     // [q] command (QUIT)
@@ -1696,31 +1575,27 @@ static int process_info_frame(session_t *s){
 
 static int cmd_cb(session_t *s) {
     int ret = 0;
-    char ch_buff[64];
+    char sbuf[64];
+    cw_unpack_context upc;
 
     cw_pack_context_init(&s->pc_resp, s->resp_buffer, RESP_BUFFER_SIZE, NULL); // Init command response context
     cw_pack_context_init(&s->pc_tx, s->tx_buffer, TX_BUFFER_SIZE, NULL); // Init frame response context
-    cw_unpack_context upc;
+ 
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
-    int r = cw_unpack_map_search(&upc, "t");
+    int r = cw_unpack_map_get_str(&upc, "t", sbuf, sizeof(sbuf), NULL);
     if (r){
-        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command type field: %d", s->h, r);
+        ESP_LOGE(LOG_TAG, "[%d] Error obtaining command field type: %s", s->h, cw_unpack_map_strerr(r));
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    cw_unpack_next(&upc);
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_STR) {
-        ESP_LOGE(LOG_TAG, "[%d] command type isn't string type", s->h);
-        ret = ERR_FRAME_INVALID;
-        goto exitfn;
-    }
-    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, cw_unpack_cstr(&upc, ch_buff, sizeof(ch_buff)));
 
-    if (cw_unpack_cmp_str(&upc, "i") == 0) {
+    ESP_LOGI(LOG_TAG, "[%d] Rx frame: %s", s->h, sbuf);
+
+    if (strcmp(sbuf, "i") == 0) {
         ret = process_info_frame(s);
-    } else if (cw_unpack_cmp_str(&upc, "l") == 0) {
+    } else if (strcmp(sbuf, "l") == 0) {
         ret = process_login_frame(s);
-    } else if (cw_unpack_cmp_str(&upc, "c") == 0) {
+    } else if (strcmp(sbuf, "c") == 0) {
         ret = process_cmd_frame(s);
     } else {
         ret = ERR_FRAME_UNKNOWN;
@@ -1884,8 +1759,8 @@ static esp_err_t load_flash_config() {
     }
     if(size != sizeof(cfg_buf)) {
         ESP_LOGW(LOG_TAG, "Config size mismatch!")
-        if(size > sizeof(config)) {
-            size = sizeof(config);
+        if(size > sizeof(cfg_buf)) {
+            size = sizeof(cfg_buf);
         }
     }
     err = nvs_get_blob(nvs_config_h, "config", cfg_buf, &size); // Get blob size
@@ -1895,113 +1770,49 @@ static esp_err_t load_flash_config() {
     }
     // Translate from msgpack to config struct
     cw_unpack_context_init(&upc, cfg_buf, sizeof(cfg_buf), NULL);
-    int r;
-    r = cw_unpack_map_search(&upc, "fv");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.fw_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"fv\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"fv\" field not found");
+    int r = cw_unpack_map_get_u32(&upc, "fv", &config.fw_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"fv\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "kv");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.key_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"kv\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"kv\" field not found");
+    r = cw_unpack_map_get_u64(&upc, "kv", &config.key_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"kv\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "bc");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.boot_cnt = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"bc\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"bc\" field not found");
+    r = cw_unpack_map_get_u32(&upc, "bc", &config.boot_cnt);
+    if (r){
+        ESP_LOGE("CONFIG", "\"bc\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "cf");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_POSITIVE_INTEGER) {
-            config.cfg_ver = upc.item.as.u64;
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"cf\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"cf\" field not found");
+    r = cw_unpack_map_get_u32(&upc, "cf", &config.cfg_ver);
+    if (r){
+        ESP_LOGE("CONFIG", "\"cf\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "sk");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.secret_key, upc.item.as.bin.start, sizeof(config.secret_key));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"sk\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"sk\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "sk", config.secret_key, sizeof(config.secret_key), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"sk\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "pk");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.public_key, upc.item.as.bin.start, sizeof(config.public_key));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"pk\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"pk\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "pk", config.public_key, sizeof(config.public_key), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"pk\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "id");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_BIN) {
-            memcpy(config.vk_id, upc.item.as.bin.start, sizeof(config.vk_id));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"id\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"id\" field not found");
+    r = cw_unpack_map_get_buf(&upc, "id", config.vk_id, sizeof(config.vk_id), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"id\" %s", cw_unpack_map_strerr(r));
     }
 
-    cw_unpack_restore(&upc);
-    r = cw_unpack_map_search(&upc, "tz");
-    if (!r){
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_STR) {
-            cw_unpack_cstr(&upc, config.tz_data, sizeof(config.tz_data));
-        } else {
-            ESP_LOGE("CONFIG", "invalid \"tz\" field");
-        }
-    } else {
-        ESP_LOGE("CONFIG", "\"tz\" field not found");
+    r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), &size);
+    if (r){
+        ESP_LOGE("CONFIG", "\"tz\" %s", cw_unpack_map_strerr(r));
     }
+
     if (strlen(config.tz_data) == 0){
         strcpy(config.tz_data, "UTC0");
     }
-
 
     ESP_LOGI(LOG_TAG, "Config loaded")
     err = ESP_OK;
@@ -2094,6 +1905,11 @@ void app_main(void) {
     bool status_led = false;
     size_t olen;
     
+    // Setup Watch Dog
+    ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    ESP_ERROR_CHECK(esp_task_wdt_reset());
+
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     ESP_LOGI(LOG_TAG, "Starting virkey...");
@@ -2129,6 +1945,9 @@ void app_main(void) {
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY));
+
+        // Feed Watch Dog
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
 
         // Update actuators
         for (int act = 0; act < MAX_ACTUATORS; act ++){

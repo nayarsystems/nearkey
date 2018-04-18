@@ -34,8 +34,10 @@
                 "/home/pepe/esp32/xtensa-esp32-elf/lib/gcc/xtensa-esp32-elf/5.2.0/include",
                 "/home/pepe/esp32/xtensa-esp32-elf/xtensa-esp32-elf/include/c++/5.2.0"
             ],
-            
-            "intelliSenseMode": "clang-x64"
+            "intelliSenseMode": "clang-x64",
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
         }
     ],
     "version": 3

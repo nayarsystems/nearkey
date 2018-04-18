@@ -16,6 +16,7 @@
 #include "cwpack_util.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "esp_task_wdt.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_event_loop.h"
@@ -1904,6 +1905,11 @@ void app_main(void) {
     bool status_led = false;
     size_t olen;
     
+    // Setup Watch Dog
+    ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    ESP_ERROR_CHECK(esp_task_wdt_reset());
+
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
     ESP_LOGI(LOG_TAG, "Starting virkey...");
@@ -1939,6 +1945,9 @@ void app_main(void) {
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY));
+
+        // Feed Watch Dog
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
 
         // Update actuators
         for (int act = 0; act < MAX_ACTUATORS; act ++){

@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 31
+#define FW_VER 32
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -114,7 +114,7 @@ static CODE errors[] = {
 // --- End Errors
 
 // Log stuff
-#define LOG_SIZE 1024
+#define LOG_SIZE 30
 
 #define LOG_OP_BOOT      1
 #define LOG_OP_ERROR     2
@@ -334,15 +334,19 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
         }
         log_elements--;
     }
-    if (log_elements > 0) {
-        int32_t last_log_idx = log_rear - 1;
-        if (last_log_idx < 0) {
-            last_log_idx = LOG_SIZE - 1;
-        }
-        if (log[last_log_idx].usr == usr && log[last_log_idx].op == op && log[last_log_idx].par == par && log[last_log_idx].res == res && (now - log[last_log_idx].ts) < 60) {
-            log[last_log_idx].rep ++;
-             ESP_LOGI("LOGGER","[%d] last entry repeated %d times", sh, log[last_log_idx].rep);
-             return;
+
+    if (log_elements > 0) { // Check log repetitions
+        int f = log_front;
+        for(int n = 0; n < log_elements; n++) {
+            if (log[f].usr == usr && log[f].op == op && log[f].par == par && log[f].res == res && (now - log[f].ts) < 60) {
+                log[f].rep ++;
+                ESP_LOGI("LOGGER","[%d] previous entry repeated %d times", sh, log[f].rep);
+                return;
+            }
+            f++;
+            if (f >= LOG_SIZE) {
+                f = 0;
+            }
         }
     }
 
@@ -360,36 +364,13 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
         log_rear = 0;
     }
     log_elements++;
-    ESP_LOGI("LOGGER","[%d] boot:%d cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d uncnf:%d", sh, config.boot_cnt, log_cnt, usr, now, op, code2str(log_ops, op), par, res, log_elements);
+    ESP_LOGI("LOGGER","[%d] boot:%d cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d", sh, config.boot_cnt, log_cnt, usr, now, op, code2str(log_ops, op), par, res);
 }
 
-static int log_purge(uint32_t bc, uint32_t lc) {
-    int purged = 0;
-
-    while (log_elements > 0) {
-        if(log[log_front].bcnt > bc) {
-            break;
-        }
-        if(log[log_front].bcnt == bc && log[log_front].cnt > lc ) {
-            break;
-        }
-        log_front++;
-        if (log_front >= LOG_SIZE) {
-            log_front = 0;
-        }
-        log_elements--;
-        purged++;
-    }
-    return purged;
-}
-
-static void log_append_msgpack(cw_pack_context *pc, int max){
-    if (max > log_elements){
-        max = log_elements;
-    }
-    cw_pack_cstr(pc, "lg"); cw_pack_array_size(pc, max);
+static void log_append_msgpack(cw_pack_context *pc){
+    cw_pack_cstr(pc, "lg"); cw_pack_array_size(pc, log_elements);
     int f = log_front;
-    for(int n = 0; n < max; n++) {
+    for(int n = 0; n < log_elements; n++) {
         cw_pack_array_size(pc, 8);
         cw_pack_unsigned(pc, log[f].bcnt);
         cw_pack_unsigned(pc, log[f].cnt);
@@ -872,7 +853,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
     cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
-    log_append_msgpack(&pc, 30);
+    log_append_msgpack(&pc);
     if (ota.start) {
         cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
         cw_pack_cstr(&pc, "ha"); cw_pack_bin(&pc, ota.sha256sum, sizeof(ota.sha256sum));
@@ -1032,24 +1013,6 @@ static int process_login_frame(session_t *s) {
         goto exitfn;
     }
     ESP_LOGI("LOGIN", "[%d] User: %d", s->h, s->user);
-
-    r = cw_unpack_map_search(&upc, "l");
-    if (!r) {
-        cw_unpack_next(&upc);
-        if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_ARRAY && upc.item.as.array.size == 2) {
-            cw_unpack_next(&upc);
-            uint32_t bc = upc.item.as.u64;
-            cw_unpack_next(&upc);
-            uint32_t lc = upc.item.as.u64;
-            int purged = log_purge(bc, lc);
-            if (purged > 0) {
-                ESP_LOGI("LOGIN", "[%d] purged %d log entries", s->h, purged);    
-            }
-        } else {
-            ESP_LOGE("LOGIN", "[%d] malformed \"l\" field", s->h);    
-        }
-    }
-    cw_unpack_restore(&upc);
 
     r = cw_unpack_map_get_bufptr(&upc, "uk", &buf, &buf_sz);
     if (r){

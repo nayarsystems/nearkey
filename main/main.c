@@ -1,5 +1,5 @@
 #define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
-#define FW_VER 32
+#define FW_VER 33
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -245,6 +245,11 @@ static bool erase_on_reset;
 #define RESET_BUTTON_TIME 30 // 3 seconds
 static uint32_t reset_button_tm;
 // --- End Reset button timer
+
+// Advertising enable timer
+#define ADV_ENABLE_TIME 300 // 30 seconds
+static uint32_t adv_enable_tm;
+// --- End Advertising enable timer
 
 // Function declarations
 static int reset_flash_config(bool);
@@ -1979,6 +1984,15 @@ void app_main(void) {
             }
         }
         // --- End Reset Timer
+
+        // Advertising enable timer
+        if (adv_enable_tm > 0) {
+            adv_enable_tm --;
+        } else {
+            gatts_start_adv();
+            adv_enable_tm = ADV_ENABLE_TIME;
+        }
+        // --- End Advertising enable timer
 
         xSemaphoreGive(session_sem);
     }

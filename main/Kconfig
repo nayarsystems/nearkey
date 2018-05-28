@@ -9,6 +9,10 @@ choice
         help
             Selects custom board configuration from main/custom_board.h file.
             See boards.h file to get examples.
+    config VK_BOARD_VK1X
+        bool "VIRKEY VK1X"
+        help
+            Selects Virkey board version 1.x.
     config VK_BOARD_OLIMEX_EVB
         bool "OLIMEX ESP32 EVB"
         help

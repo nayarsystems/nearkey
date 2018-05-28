@@ -1800,7 +1800,12 @@ static void setup_gpio() {
     }
 #if STATUS_LED_GPIO >= 0    
     io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
-#endif    
+#endif
+
+#if BUZZER_GPIO >= 0    
+    io_conf.pin_bit_mask |= ((uint64_t)1 << BUZZER_GPIO);
+#endif
+
     // disable interrupt
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
     // set as output mode

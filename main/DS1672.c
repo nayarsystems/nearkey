@@ -30,7 +30,6 @@ int DS1672_Read(uint8_t addr, uint8_t *data, size_t count) {
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, DS1672_WRITE_ADDR, true);
 	i2c_master_write_byte(cmd, addr, true);
-	//i2c_master_stop(cmd);
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, DS1672_READ_ADDR, true);
 	i2c_master_read(cmd, data, count, I2C_MASTER_LAST_NACK);
@@ -72,7 +71,6 @@ int DS1672_get_timestamp(int64_t *ts) {
     return err;
 }
 
-
 int hctosys() {
     int64_t ts = 0;
     struct timeval tv = {0};
@@ -92,4 +90,4 @@ int systohc() {
     return DS1672_set_timestamp(now);
 }
 
-#endif //RTC_DRIVER_DS1672
+#endif // RTC_DRIVER_DS1672

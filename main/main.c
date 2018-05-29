@@ -122,6 +122,7 @@ static CODE errors[] = {
 #define LOG_OP_FW_INIT   20
 #define LOG_OP_FW_END    21
 #define LOG_OP_ACTUATOR  100
+#define LOG_OP_MONITOR   110
 
 static CODE log_ops[] = {
     {LOG_OP_BOOT, "Boot"},
@@ -130,6 +131,7 @@ static CODE log_ops[] = {
     {LOG_OP_FW_INIT, "Firmware flash init"},
     {LOG_OP_FW_END, "Firmware flash end"},
     {LOG_OP_ACTUATOR, "Shot actuator"},
+    {LOG_OP_MONITOR, "Monitor change"},
     {-1, NULL},
 };
 
@@ -1791,64 +1793,59 @@ exitfn:
 static void setup_gpio() {
     gpio_config_t io_conf = {0};
 
-    // bit mask of the pins that you want to set as outputs
     for(int n = 0; n < MAX_ACTUATORS; n++) {
         if (act_gpio[n] < 0){
             continue;
         }
         io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
     }
-#ifdef STATUS_LED_GPIO    
-    io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
-#endif
+    #ifdef STATUS_LED_GPIO    
+        io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
+    #endif
 
-#ifdef BUZZER_GPIO    
-    io_conf.pin_bit_mask |= ((uint64_t)1 << BUZZER_GPIO);
-#endif
+    #ifdef BUZZER_GPIO    
+        io_conf.pin_bit_mask |= ((uint64_t)1 << BUZZER_GPIO);
+    #endif
 
-    // disable interrupt
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-    // set as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
-    // disable pull-down mode
     io_conf.pull_down_en = 0;
-    // disable pull-up mode
     io_conf.pull_up_en = 0;
-    // configure GPIO with the given settings
     gpio_config(&io_conf);
 
-    if (RESET_BUTTON_GPIO >= 0){
+    #if defined(RESET_BUTTON_GPIO) || defined(MONITOR_A_GPIO) || defined(MONITOR_B_GPIO)
         io_conf = (gpio_config_t){0};
-        // disable interrupt
         io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-        // set as input mode
         io_conf.mode = GPIO_MODE_INPUT;
-        // bit mask of the pins that you want to set as inputs
-        // io_conf.pin_bit_mask = (1 << 0);
-        io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON_GPIO);
-        // disable pull-down mode
         io_conf.pull_down_en = 0;
-        // disable pull-up mode
         io_conf.pull_up_en = 0;
-        // configure GPIO with the given settings
+        #ifdef RESET_BUTTON_GPIO
+            io_conf.pin_bit_mask |= ((uint64_t)1 << RESET_BUTTON_GPIO);
+        #endif
+        #ifdef MONITOR_A_GPIO
+            io_conf.pin_bit_mask |= ((uint64_t)1 << MONITOR_A_GPIO);
+        #endif
+        #ifdef MONITOR_B_GPIO
+            io_conf.pin_bit_mask |= ((uint64_t)1 << MONITOR_B_GPIO);
+        #endif
         gpio_config(&io_conf);
-    }
+    #endif
+
     reset_button_tm = RESET_BUTTON_TIME;
 
-#ifdef I2C_SCL_GPIO
-    // I2C setup
-    i2c_config_t conf = {0};
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_SDA_GPIO;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = I2C_SCL_GPIO;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = I2C_FREQ;
-    esp_err_t ret = i2c_param_config(I2C_NUM_0, &conf);
-    assert(ret == ESP_OK);
-	ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
-    assert(ret == ESP_OK);
-#endif
+    #ifdef I2C_SCL_GPIO
+        i2c_config_t conf = {0};
+        conf.mode = I2C_MODE_MASTER;
+        conf.sda_io_num = I2C_SDA_GPIO;
+        conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+        conf.scl_io_num = I2C_SCL_GPIO;
+        conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+        conf.master.clk_speed = I2C_FREQ;
+        esp_err_t ret = i2c_param_config(I2C_NUM_0, &conf);
+        assert(ret == ESP_OK);
+        ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+        assert(ret == ESP_OK);
+    #endif
 }
 
 static void set_status_led(int st) {
@@ -1866,7 +1863,7 @@ static void set_actuator(int act, int st) {
 }
 
 static int get_reset_button() {
-#if RESET_BUTTON_GPIO >=0    
+#ifdef RESET_BUTTON_GPIO    
     return gpio_get_level(RESET_BUTTON_GPIO);
 #else
     return 1
@@ -1877,7 +1874,14 @@ void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     size_t olen;
-    
+
+    #ifdef MONITOR_A_GPIO
+        int monitor_a_st = -1;
+    #endif
+    #ifdef MONITOR_B_GPIO
+        int monitor_b_st = -1;
+    #endif
+
     // Setup Watch Dog
     ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
@@ -1989,7 +1993,33 @@ void app_main(void) {
                 reboot();
             }
         }
-        // --- End Reset Timer
+        // --- End Reset timer
+
+        // Monitor inputs
+        #if defined(MONITOR_A_GPIO) || defined(MONITOR_B_GPIO)
+            int l;
+            #ifdef MONITOR_A_GPIO
+                l = gpio_get_level(MONITOR_A_GPIO);
+                #ifdef MONITOR_A_INVERT
+                    l = !l;
+                #endif
+                if (l != monitor_a_st) {
+                    log_add(NULL, LOG_OP_MONITOR, 0, l);
+                    monitor_a_st = l;
+                }
+            #endif
+            #ifdef MONITOR_B_GPIO
+                l = gpio_get_level(MONITOR_B_GPIO);
+                #ifdef MONITOR_B_INVERT
+                    l = !l;
+                #endif
+                if (l != monitor_b_st) {
+                    log_add(NULL, LOG_OP_MONITOR, 1, l);
+                    monitor_b_st = l;
+                }
+            #endif
+        #endif
+        // --- End Monitor inputs
 
         // Advertising enable timer
         if (adv_enable_tm > 0) {

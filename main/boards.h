@@ -14,12 +14,12 @@
 #define ACTUATORS_TOUT { 10, 10}
 #define STATUS_LED_GPIO 32
 #define RESET_BUTTON_GPIO 0
-#define BUZZER_GPIO -1
+#define BUZZER_GPIO 12
 #define I2C_SCL_GPIO 16
 #define I2C_SDA_GPIO 13
 #define I2C_FREQ 100000
-// #define RTC_DRIVER
-// #define RTC_DRIVER_PCF8563
+#define RTC_DRIVER
+#define RTC_DRIVER_DS1672
 #endif
 
 

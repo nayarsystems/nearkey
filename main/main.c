@@ -1798,11 +1798,11 @@ static void setup_gpio() {
         }
         io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
     }
-#if STATUS_LED_GPIO >= 0    
+#ifdef STATUS_LED_GPIO    
     io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
 #endif
 
-#if BUZZER_GPIO >= 0    
+#ifdef BUZZER_GPIO    
     io_conf.pin_bit_mask |= ((uint64_t)1 << BUZZER_GPIO);
 #endif
 
@@ -1852,7 +1852,7 @@ static void setup_gpio() {
 }
 
 static void set_status_led(int st) {
-#if STATUS_LED_GPIO >= 0
+#ifdef STATUS_LED_GPIO
     gpio_set_level(STATUS_LED_GPIO, st);
 #endif
 }
@@ -1894,9 +1894,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(save_flash_config());
     after_config();
     
-#ifdef RTC_DRIVER    
-    if (hctosys() != 0) {
-        ESP_LOGE(LOG_TAG, "Error reading hardware clock");
+#ifdef RTC_DRIVER
+    int ret = hctosys();    
+    if (ret != 0) {
+        ESP_LOGE(LOG_TAG, "Error reading hardware clock: %d", ret);
     }
 #endif
     mbedtls_base64_decode(ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));

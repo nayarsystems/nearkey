@@ -5,3 +5,4 @@ virkey.project
 main/custom_board.h
 *~
 .vscode
+main/sdkconfig.h

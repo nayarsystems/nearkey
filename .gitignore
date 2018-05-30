@@ -1,5 +1,6 @@
 build/
 dumps/
+sdkconfig
 sdkconfig.old
 virkey.project
 main/custom_board.h

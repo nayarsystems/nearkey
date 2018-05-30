@@ -12,13 +12,11 @@
     #define HW_BOARD "VK1X"
     #define ACTUATORS_GPIO {18, 5}
     #define ACTUATORS_TOUT {10, 10}
+    #define MONITORS_GPIO {26, 27}
+    #define MONITORS_INVERT
     #define STATUS_LED_GPIO 32
     #define RESET_BUTTON_GPIO 0
     #define BUZZER_GPIO 12
-    #define MONITOR_A_GPIO 26
-    #define MONITOR_A_INVERT
-    #define MONITOR_B_GPIO 27
-    #define MONITOR_B_INVERT
     #define I2C_SCL_GPIO 16
     #define I2C_SDA_GPIO 13
     #define I2C_FREQ 100000

@@ -50,6 +50,12 @@ static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRO
     static int const act_gpio[] = ACTUATORS_GPIO;
     #define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
 #endif
+
+#ifdef MONITORS_GPIO
+    static int const mon_gpio[] = MONITORS_GPIO;
+    #define MAX_MONITORS (sizeof(mon_gpio) / sizeof(mon_gpio[0]))
+    static int mon_values[MAX_MONITORS];
+#endif
 // --- End Boards config
 
 // Errors
@@ -1792,12 +1798,15 @@ exitfn:
 static void setup_gpio() {
     gpio_config_t io_conf = {0};
 
-    for(int n = 0; n < MAX_ACTUATORS; n++) {
-        if (act_gpio[n] < 0){
-            continue;
+    // Setup Outputs
+    #ifdef ACTUATORS_GPIO
+        for(int n = 0; n < MAX_ACTUATORS; n++) {
+            if (act_gpio[n] < 0){
+                continue;
+            }
+            io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
         }
-        io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
-    }
+    #endif
     #ifdef STATUS_LED_GPIO    
         io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
     #endif
@@ -1812,26 +1821,32 @@ static void setup_gpio() {
     io_conf.pull_up_en = 0;
     gpio_config(&io_conf);
 
-    #if defined(RESET_BUTTON_GPIO) || defined(MONITOR_A_GPIO) || defined(MONITOR_B_GPIO)
-        io_conf = (gpio_config_t){0};
-        io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pull_down_en = 0;
-        io_conf.pull_up_en = 0;
-        #ifdef RESET_BUTTON_GPIO
-            io_conf.pin_bit_mask |= ((uint64_t)1 << RESET_BUTTON_GPIO);
-        #endif
-        #ifdef MONITOR_A_GPIO
-            io_conf.pin_bit_mask |= ((uint64_t)1 << MONITOR_A_GPIO);
-        #endif
-        #ifdef MONITOR_B_GPIO
-            io_conf.pin_bit_mask |= ((uint64_t)1 << MONITOR_B_GPIO);
-        #endif
-        gpio_config(&io_conf);
+    // Setup Inputs
+    io_conf = (gpio_config_t){0};
+
+    #ifdef MONITORS_GPIO
+        for(int n = 0; n < MAX_MONITORS; n++) {
+            mon_values[n] = -1;
+            if (mon_gpio[n] < 0){
+                continue;
+            }
+            io_conf.pin_bit_mask |= ((uint64_t)1 << mon_gpio[n]);
+        }
     #endif
 
-    reset_button_tm = RESET_BUTTON_TIME;
+    #ifdef RESET_BUTTON_GPIO
+        io_conf.pin_bit_mask |= ((uint64_t)1 << RESET_BUTTON_GPIO);
+    #else 
+        #warning No factory reset button defined
+    #endif
+    
+    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
 
+    // Setup I2C bus
     #ifdef I2C_SCL_GPIO
         i2c_config_t conf = {0};
         conf.mode = I2C_MODE_MASTER;
@@ -1845,6 +1860,8 @@ static void setup_gpio() {
         ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
         assert(ret == ESP_OK);
     #endif
+
+    reset_button_tm = RESET_BUTTON_TIME;
 }
 
 static void set_status_led(int st) {
@@ -1873,13 +1890,6 @@ void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     size_t olen;
-
-    #ifdef MONITOR_A_GPIO
-        int monitor_a_st = -1;
-    #endif
-    #ifdef MONITOR_B_GPIO
-        int monitor_b_st = -1;
-    #endif
 
     // Setup Watch Dog
     ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
@@ -1994,28 +2004,17 @@ void app_main(void) {
         // --- End Reset timer
 
         // Monitor inputs
-        #if defined(MONITOR_A_GPIO) || defined(MONITOR_B_GPIO)
-            int l;
-            #ifdef MONITOR_A_GPIO
-                l = gpio_get_level(MONITOR_A_GPIO);
-                #ifdef MONITOR_A_INVERT
+        #ifdef MONITORS_GPIO
+            for (int mon = 0; mon < MAX_MONITORS; mon ++){
+                int l = gpio_get_level(mon_gpio[mon]);
+                #ifdef MONITORS_INVERT
                     l = !l;
                 #endif
-                if (l != monitor_a_st) {
-                    log_add(NULL, LOG_OP_MONITOR, 0, l);
-                    monitor_a_st = l;
+                if (l != mon_values[mon]) {
+                    log_add(NULL, LOG_OP_MONITOR, mon, l);
+                    mon_values[mon] = l;
                 }
-            #endif
-            #ifdef MONITOR_B_GPIO
-                l = gpio_get_level(MONITOR_B_GPIO);
-                #ifdef MONITOR_B_INVERT
-                    l = !l;
-                #endif
-                if (l != monitor_b_st) {
-                    log_add(NULL, LOG_OP_MONITOR, 1, l);
-                    monitor_b_st = l;
-                }
-            #endif
+            }
         #endif
         // --- End Monitor inputs
 

@@ -45,9 +45,11 @@ static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRO
 //
 
 // Boards config
-static int const act_tout[] = ACTUATORS_TOUT;
-static int const act_gpio[] = ACTUATORS_GPIO;
-#define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
+#ifdef ACTUATORS_GPIO
+    static int const act_tout[] = ACTUATORS_TOUT;
+    static int const act_gpio[] = ACTUATORS_GPIO;
+    #define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
+#endif
 // --- End Boards config
 
 // Errors
@@ -1118,10 +1120,7 @@ static int do_cmd_ts(session_t *s){
         tv.tv_sec = (time_t) tmp_u64;
         settimeofday(&tv, NULL);
         ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64)
-
-#ifdef RTC_DRIVER
         systohc();
-#endif
     }
 
     cw_pack_map_size(&s->pc_resp, 1);
@@ -1898,12 +1897,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(save_flash_config());
     after_config();
     
-#ifdef RTC_DRIVER
     int ret = hctosys();    
     if (ret != 0) {
         ESP_LOGE(LOG_TAG, "Error reading hardware clock: %d", ret);
     }
-#endif
+
     mbedtls_base64_decode(ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
     if(crypto_box_beforenm(ca_shared, ca_key, config.secret_key) != 0) {
         ESP_LOGE(LOG_TAG, "Error computing ca shared key");

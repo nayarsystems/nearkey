@@ -17,4 +17,7 @@
 
 esp_err_t DS1672_Write(uint8_t addr, uint8_t *data, size_t count);
 esp_err_t DS1672_Read(uint8_t addr, uint8_t *data, size_t count);
+int DS1672_hctosys(void);
+int DS1672_systohc(void);
+
 

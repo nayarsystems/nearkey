@@ -1,11 +1,8 @@
 #include "boards.h"
 
-#ifdef RTC_DRIVER_DS1672
-
 #include "esp_system.h"
 #include "DS1672.h"
 #include "driver/i2c.h"
-#include "hwrtc.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -71,7 +68,7 @@ int DS1672_get_timestamp(int64_t *ts) {
     return err;
 }
 
-int hctosys() {
+int DS1672_hctosys() {
     int64_t ts = 0;
     struct timeval tv = {0};
 
@@ -85,9 +82,7 @@ int hctosys() {
 	return  settimeofday(&tv, NULL);
 }
 
-int systohc() {
+int DS1672_systohc() {
     time_t now = time(NULL);
     return DS1672_set_timestamp(now);
 }
-
-#endif // RTC_DRIVER_DS1672

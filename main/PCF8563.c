@@ -1,11 +1,7 @@
 #include "boards.h"
-
-#ifdef RTC_DRIVER_PCF8563
-
 #include "esp_system.h"
 #include "PCF8563.h"
 #include "driver/i2c.h"
-#include "hwrtc.h"
 #include "timegm.h"
 
 #include <stdlib.h>
@@ -37,10 +33,9 @@ esp_err_t PCF_Read(uint8_t addr, uint8_t *data, size_t count) {
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, PCF8563_WRITE_ADDR, true);
 	i2c_master_write_byte(cmd, addr, true);
-	//i2c_master_stop(cmd);
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, PCF8563_READ_ADDR, true);
-	i2c_master_read(cmd, data, count, false);
+	i2c_master_read(cmd, data, count, I2C_MASTER_LAST_NACK);
 	i2c_master_stop(cmd);
 	esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_PERIOD_MS);
     i2c_cmd_link_delete(cmd);
@@ -222,7 +217,7 @@ int PCF_GetDateTime(PCF_DateTime *dateTime) {
 	return 0;
 }
 
-int hctosys(){
+int PCF_hctosys(){
 	int ret;
 	PCF_DateTime date = {0};
 	struct tm tm = {0};
@@ -250,7 +245,7 @@ fail:
 	return ret;
 }
 
-int systohc(){
+int PCF_systohc(){
 	int ret;
 	PCF_DateTime date = {0};
 	struct tm tm = {0};
@@ -276,5 +271,3 @@ fail:
 	return ret;
 }
 
-
-#endif //RTC_DRIVER_PCF8563

@@ -59,3 +59,6 @@ int PCF_SetAlarm(PCF_Alarm *alarm);
 int PCF_GetAlarm(PCF_Alarm *alarm);
 int PCF_SetDateTime(PCF_DateTime *dateTime);
 int PCF_GetDateTime(PCF_DateTime *dateTime);
+int PCF_hctosys();
+int PCF_systohc();
+

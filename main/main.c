@@ -45,9 +45,17 @@ static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRO
 //
 
 // Boards config
-static int const act_tout[] = ACTUATORS_TOUT;
-static int const act_gpio[] = ACTUATORS_GPIO;
-#define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
+#ifdef ACTUATORS_GPIO
+    static int const act_tout[] = ACTUATORS_TOUT;
+    static int const act_gpio[] = ACTUATORS_GPIO;
+    #define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
+#endif
+
+#ifdef MONITORS_GPIO
+    static int const mon_gpio[] = MONITORS_GPIO;
+    #define MAX_MONITORS (sizeof(mon_gpio) / sizeof(mon_gpio[0]))
+    static int mon_values[MAX_MONITORS];
+#endif
 // --- End Boards config
 
 // Errors
@@ -122,6 +130,7 @@ static CODE errors[] = {
 #define LOG_OP_FW_INIT   20
 #define LOG_OP_FW_END    21
 #define LOG_OP_ACTUATOR  100
+#define LOG_OP_MONITOR   110
 
 static CODE log_ops[] = {
     {LOG_OP_BOOT, "Boot"},
@@ -130,6 +139,7 @@ static CODE log_ops[] = {
     {LOG_OP_FW_INIT, "Firmware flash init"},
     {LOG_OP_FW_END, "Firmware flash end"},
     {LOG_OP_ACTUATOR, "Shot actuator"},
+    {LOG_OP_MONITOR, "Monitor change"},
     {-1, NULL},
 };
 
@@ -1116,10 +1126,7 @@ static int do_cmd_ts(session_t *s){
         tv.tv_sec = (time_t) tmp_u64;
         settimeofday(&tv, NULL);
         ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64)
-
-#ifdef RTC_DRIVER
         systohc();
-#endif
     }
 
     cw_pack_map_size(&s->pc_resp, 1);
@@ -1791,63 +1798,74 @@ exitfn:
 static void setup_gpio() {
     gpio_config_t io_conf = {0};
 
-    // bit mask of the pins that you want to set as outputs
-    for(int n = 0; n < MAX_ACTUATORS; n++) {
-        if (act_gpio[n] < 0){
-            continue;
+    // Setup Outputs
+    #ifdef ACTUATORS_GPIO
+        for(int n = 0; n < MAX_ACTUATORS; n++) {
+            if (act_gpio[n] < 0){
+                continue;
+            }
+            io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
         }
-        io_conf.pin_bit_mask |= ((uint64_t)1 << act_gpio[n]);
-    }
-#if STATUS_LED_GPIO >= 0    
-    io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
-#endif    
-    // disable interrupt
+    #endif
+    #ifdef STATUS_LED_GPIO    
+        io_conf.pin_bit_mask |= ((uint64_t)1 << STATUS_LED_GPIO);
+    #endif
+
+    #ifdef BUZZER_GPIO    
+        io_conf.pin_bit_mask |= ((uint64_t)1 << BUZZER_GPIO);
+    #endif
+
     io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-    // set as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
-    // disable pull-down mode
     io_conf.pull_down_en = 0;
-    // disable pull-up mode
     io_conf.pull_up_en = 0;
-    // configure GPIO with the given settings
     gpio_config(&io_conf);
 
-    if (RESET_BUTTON_GPIO >= 0){
-        io_conf = (gpio_config_t){0};
-        // disable interrupt
-        io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-        // set as input mode
-        io_conf.mode = GPIO_MODE_INPUT;
-        // bit mask of the pins that you want to set as inputs
-        // io_conf.pin_bit_mask = (1 << 0);
-        io_conf.pin_bit_mask = ((uint64_t)1 << RESET_BUTTON_GPIO);
-        // disable pull-down mode
-        io_conf.pull_down_en = 0;
-        // disable pull-up mode
-        io_conf.pull_up_en = 0;
-        // configure GPIO with the given settings
-        gpio_config(&io_conf);
-    }
-    reset_button_tm = RESET_BUTTON_TIME;
+    // Setup Inputs
+    io_conf = (gpio_config_t){0};
 
-#ifdef I2C_SCL_GPIO
-    // I2C setup
-    i2c_config_t conf = {0};
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_SDA_GPIO;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = I2C_SCL_GPIO;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = I2C_FREQ;
-    esp_err_t ret = i2c_param_config(I2C_NUM_0, &conf);
-    assert(ret == ESP_OK);
-	ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
-    assert(ret == ESP_OK);
-#endif
+    #ifdef MONITORS_GPIO
+        for(int n = 0; n < MAX_MONITORS; n++) {
+            mon_values[n] = -1;
+            if (mon_gpio[n] < 0){
+                continue;
+            }
+            io_conf.pin_bit_mask |= ((uint64_t)1 << mon_gpio[n]);
+        }
+    #endif
+
+    #ifdef RESET_BUTTON_GPIO
+        io_conf.pin_bit_mask |= ((uint64_t)1 << RESET_BUTTON_GPIO);
+    #else 
+        #warning No factory reset button defined
+    #endif
+    
+    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+
+    // Setup I2C bus
+    #ifdef I2C_SCL_GPIO
+        i2c_config_t conf = {0};
+        conf.mode = I2C_MODE_MASTER;
+        conf.sda_io_num = I2C_SDA_GPIO;
+        conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+        conf.scl_io_num = I2C_SCL_GPIO;
+        conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+        conf.master.clk_speed = I2C_FREQ;
+        esp_err_t ret = i2c_param_config(I2C_NUM_0, &conf);
+        assert(ret == ESP_OK);
+        ret = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+        assert(ret == ESP_OK);
+    #endif
+
+    reset_button_tm = RESET_BUTTON_TIME;
 }
 
 static void set_status_led(int st) {
-#if STATUS_LED_GPIO >= 0
+#ifdef STATUS_LED_GPIO
     gpio_set_level(STATUS_LED_GPIO, st);
 #endif
 }
@@ -1861,7 +1879,7 @@ static void set_actuator(int act, int st) {
 }
 
 static int get_reset_button() {
-#if RESET_BUTTON_GPIO >=0    
+#ifdef RESET_BUTTON_GPIO    
     return gpio_get_level(RESET_BUTTON_GPIO);
 #else
     return 1
@@ -1872,7 +1890,7 @@ void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     size_t olen;
-    
+
     // Setup Watch Dog
     ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
@@ -1889,11 +1907,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(save_flash_config());
     after_config();
     
-#ifdef RTC_DRIVER    
-    if (hctosys() != 0) {
-        ESP_LOGE(LOG_TAG, "Error reading hardware clock");
+    int ret = hctosys();    
+    if (ret != 0) {
+        ESP_LOGE(LOG_TAG, "Error reading hardware clock: %d", ret);
     }
-#endif
+
     mbedtls_base64_decode(ca_key, crypto_box_PUBLICKEYBYTES, &olen, (uint8_t*)CA_PK, strlen(CA_PK));
     if(crypto_box_beforenm(ca_shared, ca_key, config.secret_key) != 0) {
         ESP_LOGE(LOG_TAG, "Error computing ca shared key");
@@ -1983,7 +2001,22 @@ void app_main(void) {
                 reboot();
             }
         }
-        // --- End Reset Timer
+        // --- End Reset timer
+
+        // Monitor inputs
+        #ifdef MONITORS_GPIO
+            for (int mon = 0; mon < MAX_MONITORS; mon ++){
+                int l = gpio_get_level(mon_gpio[mon]);
+                #ifdef MONITORS_INVERT
+                    l = !l;
+                #endif
+                if (l != mon_values[mon]) {
+                    log_add(NULL, LOG_OP_MONITOR, mon, l);
+                    mon_values[mon] = l;
+                }
+            }
+        #endif
+        // --- End Monitor inputs
 
         // Advertising enable timer
         if (adv_enable_tm > 0) {

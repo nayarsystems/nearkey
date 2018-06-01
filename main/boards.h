@@ -16,7 +16,7 @@
     #define MONITORS_INVERT
     #define STATUS_LED_GPIO 32
     #define RESET_BUTTON_GPIO 0
-    #define BUZZER_GPIO 12
+    #define BUZZER_GPIO 19
     #define I2C_SCL_GPIO 16
     #define I2C_SDA_GPIO 13
     #define I2C_FREQ 100000

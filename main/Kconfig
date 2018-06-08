@@ -4,11 +4,6 @@ choice
     prompt "Board"
     help
         Selects Virkey target board.
-    config VK_BOARD_CUSTOM
-        bool "Custom board"
-        help
-            Selects custom board configuration from main/custom_board.h file.
-            See boards.h file to get examples.
     config VK_BOARD_VK1X
         bool "VIRKEY VK1X"
         help
@@ -18,12 +13,14 @@ choice
         help
             Selects Olimex ESP32 evaluation board.
             https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware
-    config VK_BOARD_ESP32T
-        bool "ESP32-T"
+    config VK_BOARD_GENERIC_A
+        bool "GENERIC A"
         help
-            Selects ESP32-T evaluation board.
-            http://www.eboxmaker.com/ESP32/esp32-t.html
-            
+            Selects generic ESP32 board with free GPIO 0,2,32,33
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 2  -> Status LED
+            GPIO 32 -> Actuator 0 (Relay 0)
+            GPIO 33 -> Actuator 1 (Relay 1)
 endchoice
 
 endmenu

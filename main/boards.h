@@ -2,11 +2,6 @@
 
 #include "sdkconfig.h"
 
-// Custom board
-#ifdef CONFIG_VK_BOARD_CUSTOM
-    #include "custom_board.h"
-#endif
-
 // VK1X
 #ifdef CONFIG_VK_BOARD_VK1X
     #define HW_BOARD "VK1X"
@@ -35,6 +30,15 @@
     #define I2C_FREQ 100000
     #define RTC_DRIVER_PCF8563
 #endif
+
+// TTGO MINI 32
+#ifdef CONFIG_VK_BOARD_TTGO_MINI_32
+    #define HW_BOARD "TTGO_MINI_32"
+    #define ACTUATORS_GPIO {22}
+    #define ACTUATORS_TOUT {10}
+    #define RESET_BUTTON_GPIO 0
+#endif
+
 
 // ESP32 Generic boards (with free GPIO 0,2,32,33)
 #ifdef CONFIG_VK_BOARD_GENERIC_A

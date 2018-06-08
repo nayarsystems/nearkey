@@ -13,6 +13,11 @@ choice
         help
             Selects Olimex ESP32 evaluation board.
             https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware
+    config VK_BOARD_TTGO_MINI_32
+        bool "TTGO MINI 32"
+        help
+            Selects TTGO MINI 32 board.
+            http://ttgobbs.com/viewthread.php?tid=14448&extra=&ordertype=1
     config VK_BOARD_GENERIC_A
         bool "GENERIC A"
         help

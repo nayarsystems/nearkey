@@ -7,17 +7,44 @@ choice
     config VK_BOARD_VK1X
         bool "VIRKEY VK1X"
         help
-            Selects Virkey board version 1.x.
+            Selects Virkey board version 1.x.        
+            GPIO 0  <-  Factory reset / Boot loader
+            GPIO 18 ->  Actuator 0 (Relay 0)
+            GPIO  5 ->  Actuator 1 (Relay 1)
+            GPIO 32 ->  Status led (board led)
+            GPIO 26 <-  Input 0 (Monitor 0)
+            GPIO 27 <-  Input 1 (Monitor 1)
+            GPIO 19 ->  Buzzer
+            GPIO 16 ->  I2C SCL
+            GPIO 13 <-> I2C SDA
+            RTC DS1672
     config VK_BOARD_OLIMEX_EVB
         bool "OLIMEX ESP32 EVB"
         help
             Selects Olimex ESP32 evaluation board.
+            GPIO 0  <-  Factory reset / Boot loader
+            GPIO 32 ->  Actuator 0 (Relay 0)
+            GPIO 33 ->  Actuator 1 (Relay 1)
+            GPIO 16 ->  I2C SCL
+            GPIO 13 <-> I2C SDA
+            RTC PCF8563
             https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware
     config VK_BOARD_TTGO_MINI_32
         bool "TTGO MINI 32"
         help
             Selects TTGO MINI 32 board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 22 -> Actuator 0 (Relay 0)
             http://ttgobbs.com/viewthread.php?tid=14448&extra=&ordertype=1
+    config VK_BOARD_TTGO_T8
+        bool "TTGO T8"
+        help
+            Selects TTGO T8 board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 21 -> Status LED (board led)
+            GPIO 32 -> Actuator 0 (Relay 0)
+            GPIO 33 -> Actuator 1 (Relay 1)
+            http://www.ttgobbs.com/redirect.php?tid=11915&goto=lastpost
     config VK_BOARD_GENERIC_A
         bool "GENERIC A"
         help

@@ -39,6 +39,14 @@
     #define RESET_BUTTON_GPIO 0
 #endif
 
+// TTGO T8
+#ifdef CONFIG_VK_BOARD_TTGO_T8
+    #define HW_BOARD "TTGO_T8"
+    #define ACTUATORS_GPIO {32, 33}
+    #define ACTUATORS_TOUT {10}
+    #define STATUS_LED_GPIO 21
+    #define RESET_BUTTON_GPIO 0
+#endif
 
 // ESP32 Generic boards (with free GPIO 0,2,32,33)
 #ifdef CONFIG_VK_BOARD_GENERIC_A

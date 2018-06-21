@@ -31,6 +31,14 @@
     #define RTC_DRIVER_PCF8563
 #endif
 
+// DIYMall RELAY32
+#ifdef CONFIG_VK_BOARD_DIYMALL_RELAY32
+    #define HW_BOARD "DIYMALL_RELAY32"
+    #define ACTUATORS_GPIO {16, 17, 18, 19}
+    #define ACTUATORS_TOUT {10, 10, 10, 10}
+    #define RESET_BUTTON_GPIO 0
+#endif
+
 // TTGO MINI 32
 #ifdef CONFIG_VK_BOARD_TTGO_MINI_32
     #define HW_BOARD "TTGO_MINI_32"

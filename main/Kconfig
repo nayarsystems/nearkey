@@ -9,11 +9,11 @@ choice
         help
             Selects Virkey board version 1.x.        
             GPIO 0  <-  Factory reset / Boot loader
-            GPIO 18 ->  Actuator 0 (Relay 0)
-            GPIO  5 ->  Actuator 1 (Relay 1)
+            GPIO 18 ->  Actuator 0 (Relay 1)
+            GPIO  5 ->  Actuator 1 (Relay 2)
             GPIO 32 ->  Status led (board led)
-            GPIO 26 <-  Input 0 (Monitor 0)
-            GPIO 27 <-  Input 1 (Monitor 1)
+            GPIO 26 <-  Monitor 0 (Input 1)
+            GPIO 27 <-  Monitor 1 (Input 2)
             GPIO 19 ->  Buzzer
             GPIO 16 ->  I2C SCL
             GPIO 13 <-> I2C SDA
@@ -23,18 +23,29 @@ choice
         help
             Selects Olimex ESP32 evaluation board.
             GPIO 0  <-  Factory reset / Boot loader
-            GPIO 32 ->  Actuator 0 (Relay 0)
-            GPIO 33 ->  Actuator 1 (Relay 1)
+            GPIO 32 ->  Actuator 0 (Relay 1)
+            GPIO 33 ->  Actuator 1 (Relay 2)
             GPIO 16 ->  I2C SCL
             GPIO 13 <-> I2C SDA
             RTC PCF8563
             https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware
+    config VK_BOARD_DIYMALL_RELAY32
+        bool "DIYMALL RELAY32"
+        help
+            Selects DIYMALL RELAY32 board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 16 -> Actuator 0 (Relay 1)
+            GPIO 17 -> Actuator 1 (Relay 2)
+            GPIO 18 -> Actuator 2 (Relay 3)
+            GPIO 19 -> Actuator 3 (Relay 4)
+            http://www.diymalls.com/esp32-wifi-bluetooth-relay-module
+            https://www.aliexpress.com/item/DIYmall-ESP32S-4-Channel-Wifi-Bluetooth-Relay-Module-DC6V-0-6A-600mA-Power-Adapter-US-EU/32834939625.html?spm=2114.search0604.3.2.782b3518sYhVlO
     config VK_BOARD_TTGO_MINI_32
         bool "TTGO MINI 32"
         help
             Selects TTGO MINI 32 board.
             GPIO 0  <- Factory reset / Boot loader
-            GPIO 22 -> Actuator 0 (Relay 0)
+            GPIO 22 -> Actuator 0 (Relay 1)
             http://ttgobbs.com/viewthread.php?tid=14448&extra=&ordertype=1
     config VK_BOARD_TTGO_T8
         bool "TTGO T8"
@@ -42,8 +53,8 @@ choice
             Selects TTGO T8 board.
             GPIO 0  <- Factory reset / Boot loader
             GPIO 21 -> Status LED (board led)
-            GPIO 32 -> Actuator 0 (Relay 0)
-            GPIO 33 -> Actuator 1 (Relay 1)
+            GPIO 32 -> Actuator 0 (Relay 1)
+            GPIO 33 -> Actuator 1 (Relay 2)
             http://www.ttgobbs.com/redirect.php?tid=11915&goto=lastpost
     config VK_BOARD_GENERIC_A
         bool "GENERIC A"
@@ -51,8 +62,8 @@ choice
             Selects generic ESP32 board with free GPIO 0,2,32,33
             GPIO 0  <- Factory reset / Boot loader
             GPIO 2  -> Status LED
-            GPIO 32 -> Actuator 0 (Relay 0)
-            GPIO 33 -> Actuator 1 (Relay 1)
+            GPIO 32 -> Actuator 0 (Relay 1)
+            GPIO 33 -> Actuator 1 (Relay 2)
 endchoice
 
 endmenu

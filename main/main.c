@@ -46,8 +46,8 @@ static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRO
 
 // Boards config
 #ifdef ACTUATORS_GPIO
-    static int const act_tout[] = ACTUATORS_TOUT;
     static int const act_gpio[] = ACTUATORS_GPIO;
+    static int act_tout[] = ACTUATORS_TOUT;
     #define MAX_ACTUATORS (sizeof(act_gpio) / sizeof(act_gpio[0]))
 #endif
 
@@ -1434,14 +1434,24 @@ static int process_cmd_frame(session_t *s) {
     // [a] command (ACTUATOR n)
     if(strlen(cmd_str) >= 2 && cmd_str[0] == 'a' && cmd_str[1] >= '0' && cmd_str[1] <= '9') { // Actuator
         int n = atoi(&cmd_str[1]);
+        int action = 0;
         if(n >= 0 && n < MAX_ACTUATORS) {
             if(act_tout[n] < 0 && act_timers[n] < 0){
                 act_timers[n] = 0;
             } else {
                 act_timers[n] = act_tout[n];
             }
-            ESP_LOGI("CMD", "[%d] shoting actuator %d", s->h, n);
-            log_add(s, LOG_OP_ACTUATOR, n, 0);
+            if (act_timers[n] > 0) {
+                action = 3;
+                ESP_LOGI("CMD", "[%d] push actuator %d", s->h, n);
+            } else if (act_timers[n] == 0) {
+                action = 1;
+                ESP_LOGI("CMD", "[%d] switch off actuator %d", s->h, n);
+            } else if (act_timers[n] < 0) {
+                action = 2;
+                ESP_LOGI("CMD", "[%d] switch on actuator %d", s->h, n);
+            }
+            log_add(s, LOG_OP_ACTUATOR, n, action);
         } else {
             ESP_LOGE("CMD", "[%d] actuator %d out of range", s->h, n);
         }

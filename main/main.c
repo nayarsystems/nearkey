@@ -1,4 +1,4 @@
-#define CA_PK "VnZ0epkCQ5PnguMMIxZCIqFvrTpmMxOve3iCYK2hKX4="
+#define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
 #define FW_VER 33
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"

@@ -474,7 +474,7 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
-        }
+    }
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = cw_unpack_map_search(&upc, "a");
@@ -851,10 +851,26 @@ static void chk_attached_config(session_t *s){
     r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), NULL);
     if(r) {
         ESP_LOGE("ATTACHED_CONFIG", "[%d] \"tz\" %s", s->h, cw_unpack_map_strerr(r));
-        goto exitfn;
+    } else {
+        ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
     }
-    ESP_LOGI("ATTACHED_CONFIG", "[%d] tz_data: %s", s->h, config.tz_data);
 
+    cw_unpack_context array;
+    r = cw_unpack_map_get_array(&upc, "$act_tim", &array);
+    if (r){
+        ESP_LOGE("CONFIG", "\"$act_tim\" %s", cw_unpack_map_strerr(r));
+    } else {
+        uint32_t sz = array.item.as.array.size;
+        if (sz > MAX_ACTUATORS) {
+            sz = MAX_ACTUATORS;
+        }
+        for (int i=0; i < sz; i++) {
+            cw_unpack_next(&array);
+            if (array.return_code == CWP_RC_OK && (array.item.type == CWP_ITEM_NEGATIVE_INTEGER || array.item.type == CWP_ITEM_POSITIVE_INTEGER)) {
+                act_tout[i] = array.item.as.i64;
+            }
+        }
+    }
     save_flash_config();
     after_config();
 
@@ -1596,7 +1612,7 @@ static esp_err_t save_flash_config() {
     config.fw_ver = FW_VER;
     // Translate config struct to msgpack
     cw_pack_context_init(&pc, cfg_buf, sizeof(cfg_buf), NULL);
-    cw_pack_map_size(&pc, 8);
+    cw_pack_map_size(&pc, 9);
     cw_pack_cstr(&pc, "fv"); cw_pack_unsigned(&pc, config.fw_ver);
     cw_pack_cstr(&pc, "kv"); cw_pack_unsigned(&pc, config.key_ver);
     cw_pack_cstr(&pc, "bc"); cw_pack_unsigned(&pc, config.boot_cnt);
@@ -1605,6 +1621,11 @@ static esp_err_t save_flash_config() {
     cw_pack_cstr(&pc, "pk"); cw_pack_bin(&pc, config.public_key, crypto_box_PUBLICKEYBYTES);
     cw_pack_cstr(&pc, "id"); cw_pack_bin(&pc, config.vk_id, 6);
     cw_pack_cstr(&pc, "tz"); cw_pack_cstr(&pc, config.tz_data);
+    // Application specific config
+    cw_pack_cstr(&pc, "$act_tim"); cw_pack_array_size(&pc, MAX_ACTUATORS);
+    for (int i=0; i < MAX_ACTUATORS; i++) {
+        cw_pack_signed(&pc, act_tout[i]);
+    }
 
     err = nvs_set_blob(nvs_config_h, "config", cfg_buf, sizeof(cfg_buf));
     if(err != ESP_OK) {
@@ -1718,9 +1739,25 @@ static esp_err_t load_flash_config() {
     if (r){
         ESP_LOGE("CONFIG", "\"tz\" %s", cw_unpack_map_strerr(r));
     }
-
     if (strlen(config.tz_data) == 0){
         strcpy(config.tz_data, "UTC0");
+    }
+    // Application specific config
+    cw_unpack_context array;
+    r = cw_unpack_map_get_array(&upc, "$act_tim", &array);
+    if (r){
+        ESP_LOGE("CONFIG", "\"$act_tim\" %s", cw_unpack_map_strerr(r));
+    } else {
+        if (array.item.as.array.size != MAX_ACTUATORS) {
+            ESP_LOGE("CONFIG", "\"$act_tim\" size missmatch %d != %d", array.item.as.array.size, MAX_ACTUATORS);
+        } else {
+            for (int i=0; i < MAX_ACTUATORS; i++) {
+                cw_unpack_next(&array);
+                if (array.return_code == CWP_RC_OK && (array.item.type == CWP_ITEM_NEGATIVE_INTEGER || array.item.type == CWP_ITEM_POSITIVE_INTEGER)) {
+                    act_tout[i] = array.item.as.i64;
+                }
+            }
+        }
     }
 
     ESP_LOGI(LOG_TAG, "Config loaded")

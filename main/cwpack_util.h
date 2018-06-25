@@ -13,6 +13,7 @@ int cw_unpack_cmp_str(cw_unpack_context *upc, const char *str);
 int cw_unpack_map_search(cw_unpack_context *upc, const char *key);
 int cw_unpack_map_get_buf(const cw_unpack_context *upcc, const char *key, uint8_t *buf, size_t bsize, size_t *used);
 int cw_unpack_map_get_bufptr(const cw_unpack_context *upcc, const char *key, uint8_t **buf, size_t *bsize);
+int cw_unpack_map_get_array(const cw_unpack_context *upcc, const char *key, cw_unpack_context *array_ctx);
 int cw_unpack_map_get_str(const cw_unpack_context *upcc, const char *key, char *buf, size_t bsize, size_t *used);
 int cw_unpack_map_get_i64(const cw_unpack_context *upcc, const char *key, int64_t *i64p);
 int cw_unpack_map_get_u64(const cw_unpack_context *upcc, const char *key, uint64_t *u64p);

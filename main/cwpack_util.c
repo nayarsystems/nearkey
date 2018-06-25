@@ -74,6 +74,19 @@ int cw_unpack_map_get_bufptr(const cw_unpack_context *upcc, const char *key, uin
     return 0;
 }
 
+int cw_unpack_map_get_array(const cw_unpack_context *upcc, const char *key, cw_unpack_context *array_ctx) {
+    int ret = 0;
+
+    *array_ctx = *upcc;
+    ret = cw_unpack_map_search(array_ctx, key);
+    if (ret != 0) return ret;
+    cw_unpack_next(array_ctx);
+    if (array_ctx->return_code != CWP_RC_OK || (array_ctx->item.type != CWP_ITEM_ARRAY)) {
+        return -2;
+    }
+    return 0;
+}
+
 int cw_unpack_map_get_str(const cw_unpack_context *upcc, const char *key, char *buf, size_t bsize, size_t *used) {
     int ret = 0;
     cw_unpack_context upc = *upcc;

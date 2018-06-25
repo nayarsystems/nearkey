@@ -267,8 +267,7 @@ static esp_err_t save_flash_config();
 static void set_actuator(int act, int st);
 static void clear_session(session_t *s);
 static int chk_expiration(session_t *s);
-static int chk_time_res(session_t *s, const char *field, bool allow);
-static int chk_time_res_2(session_t *s, const char *field);
+static int chk_time_res(session_t *s, const char *field);
 // --- End Function definitions
 
 
@@ -470,21 +469,12 @@ static int chk_cmd_access(session_t *s, const char* cmd) {
             err = ERR_KEY_EXPIRED;
             goto exitfn;
         }
-        if (chk_time_res(s, "p", true) != 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
-        }
 
-        if (chk_time_res(s, "d", false) != 0 ){
+        if (chk_time_res(s, "z") != 0 ){
             err = ERR_TIME_RESTRICTION;
             goto exitfn;
         }
-
-        if (chk_time_res_2(s, "z") != 0 ){
-            err = ERR_TIME_RESTRICTION;
-            goto exitfn;
         }
-    }
 
     cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
     int r = cw_unpack_map_search(&upc, "a");
@@ -516,7 +506,7 @@ exitfn:
     return err;
 }
 
-static int chk_time_res_2(session_t *s, const char *field){
+static int chk_time_res(session_t *s, const char *field){
     int ret = 0;
     cw_unpack_context upc;
     time_t now = time(NULL);
@@ -699,72 +689,6 @@ continue_next:
         ret = 0;
     }
  
-exitfn:
-    return ret;
-}
-
-static int chk_time_res(session_t *s, const char *field, bool allow) {
-    int ret = 0;
-    cw_unpack_context upc;
-
-    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
-    int r = cw_unpack_map_search(&upc, field);
-    if (r){
-        ret = 0;
-        goto exitfn; // If not field presence, allow access by default
-    }
-    cw_unpack_next(&upc);
-    if (upc.return_code == CWP_RC_OK && upc.item.type == CWP_ITEM_NIL) {
-        ret = 0;
-        goto exitfn; // If field is nil, allow access by default
-    }
-    if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_ARRAY) {
-        ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s is not array type", s->h, field);
-        ret = 2;
-        goto exitfn;
-    }
-    for(int i = upc.item.as.array.size; i > 0; i--) {
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || (upc.item.type != CWP_ITEM_ARRAY)) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s entry isn't array type", s->h, field);
-            ret = 2;
-            goto exitfn;
-        }
-        if(upc.item.as.array.size != 2) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s array size missmatch", s->h, field);
-            ret = 2;
-            goto exitfn;
-        }
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s Invalid array element type [from]", s->h, field);
-            ret = 2;
-            goto exitfn;
-        }
-        uint64_t from = upc.item.as.u64;
-        cw_unpack_next(&upc);
-        if (upc.return_code != CWP_RC_OK || upc.item.type != CWP_ITEM_POSITIVE_INTEGER) {
-            ESP_LOGE("CHK_TIME_RES", "[%d] Restrictions field:%s Invalid array element type [to]", s->h, field);
-            ret = 2;
-            goto exitfn;
-        }
-        uint64_t to = upc.item.as.u64;
-        time_t now = time(NULL);
-        if (now >= from && now <= to) {
-            if (allow) {
-                ret = 0;
-            } else {
-                ret = 1;
-            }
-            goto exitfn;
-        }
-        
-    }
-    if (allow) {
-        ret = 1;
-    } else {
-        ret = 0;
-    }
 exitfn:
     return ret;
 }

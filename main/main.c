@@ -1382,7 +1382,7 @@ static int process_cmd_frame(session_t *s) {
                 act_timers[n] = act_tout[n];
             }
             if (act_timers[n] > 0) {
-                action = 3;
+                action = 0;
                 ESP_LOGI("CMD", "[%d] push actuator %d", s->h, n);
             } else if (act_timers[n] == 0) {
                 action = 1;

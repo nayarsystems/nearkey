@@ -858,7 +858,7 @@ static void chk_attached_config(session_t *s){
     cw_unpack_context array;
     r = cw_unpack_map_get_array(&upc, "$act_tim", &array);
     if (r){
-        ESP_LOGE("CONFIG", "\"$act_tim\" %s", cw_unpack_map_strerr(r));
+        ESP_LOGE("ATTACHED_CONFIG", "\"$act_tim\" %s", cw_unpack_map_strerr(r));
     } else {
         uint32_t sz = array.item.as.array.size;
         if (sz > MAX_ACTUATORS) {

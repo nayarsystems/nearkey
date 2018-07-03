@@ -1,5 +1,10 @@
 # Virkey
-High security multi-purpose Bluetooth Low Energy (BLE) relays.
+Virkey aims to be a professional access control device using Bluetooth Low Energy (BLE).
+
+## Use cases
+* Garage door opener.
+* Safe switch.
+* Clocking machine.
 
 ## Main characteristics
 - Asymmetric encryption algorithm ([libsodium](https://download.libsodium.org/doc/))

@@ -25,7 +25,26 @@ This feature is crucial to fix potential security or functionality flaws.
   
   See full details in [boards.h](https://github.com/nayarsystems/virkey/blob/master/main/boards.h) and [kconfig](https://github.com/nayarsystems/virkey/blob/master/main/Kconfig)
 
-## Compile
+## Flash your board with precompiled images
+First you must install [esptool](https://github.com/espressif/esptool).
+
+Go to `bin` directory located in virkey working directory.
+Replace COM_PORT with the correct com port.
+Replace BOARD_XXX.bin with the correct board file.
+Run this command:
+```
+esptool.py --chip esp32 --port COM_PORT --baud 115200 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 40m --flash_size detect 0x1000 bootloader.bin 0x10000 BOARD_XXX.bin 0x8000 partitions.bin
+```
+
+If you want erase full flash before flash virkey (you will lose previous configurations), Run this command:
+```
+esptool.py --chip esp32 --port COM_PORT --baud 115200 erase_flash
+```
+
+
+
+
+## Compile sources
 Follow [esp-idf](https://github.com/espressif/esp-idf) install instructions.
 
 Virkey uses version 3.0 of esp-idf. So you must checkout this branch on esp-idf working directory.

@@ -58,7 +58,7 @@
 
 // ESP32 Generic boards (with free GPIO 0,2,32,33)
 #ifdef CONFIG_VK_BOARD_GENERIC_A
-    #define HW_BOARD "GENERIC"
+    #define HW_BOARD "GENERIC_A"
     #define ACTUATORS_GPIO {32, 33}
     #define ACTUATORS_TOUT {10, 10}
     #define STATUS_LED_GPIO 2

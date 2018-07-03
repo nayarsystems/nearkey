@@ -9,7 +9,7 @@ Virkey aims to be a professional access control device using Bluetooth Low Energ
 ## Main characteristics
 - Asymmetric encryption algorithm ([libsodium](https://download.libsodium.org/doc/))
 - Unlimited users per device.
-- Over-the-Air (OTA) firmware updates. The updates are transparent through users normal utilization. For example, when users open a garage door they send firmware chunks transparently. When all chunks are received, virkey hardware switches to new firmware version.
+- Over-the-Air (OTA) firmware updates. The updates are transparent through users normal utilization. For example, when users open a garage door they send firmware chunks transparently. When all chunks are received, Virkey hardware switches to new firmware version.
 This feature is crucial to fix potential security or functionality flaws.
 - Supports complex time restriction rules.
 - Android and iOS app (they are free but not open-source right now).
@@ -33,13 +33,13 @@ This feature is crucial to fix potential security or functionality flaws.
 ## Flash your board with precompiled images
 First you must install [esptool](https://github.com/espressif/esptool).
 
-Go to `bin` directory located in virkey working directory.
+Go to `bin` directory located in Virkey working directory.
 Run this command replacing COM_PORT with the correct com port and BOARD_XXX.bin with the correct board file.
 ```
 esptool.py --chip esp32 --port COM_PORT --baud 115200 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 40m --flash_size detect 0x1000 bootloader.bin 0x10000 BOARD_XXX.bin 0x8000 partitions.bin
 ```
 
-If you want erase full flash before flash virkey (you will lose previous configurations), run this command:
+If you want erase full flash before flashing Virkey (YOU WILL LOSE PREVIOUS CONFIGURATIONS), run this command:
 ```
 esptool.py --chip esp32 --port COM_PORT --baud 115200 erase_flash
 ```
@@ -72,7 +72,7 @@ $ make flash
 ```
 Execute `make monitor` after successful flash if you want see Virkey's debug output.
 
-## Using virkey
+## Using Virkey
 After successful flash, launch Virkey APP and follow instructions.
 
 

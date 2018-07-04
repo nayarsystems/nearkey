@@ -73,6 +73,8 @@ $ make flash
 Execute `make monitor` after successful flash if you want see Virkey's debug output.
 
 ## Using Virkey
-After successful flash, launch Virkey APP and follow instructions.
+After successful flash, launch Virkey APP and follow instructions to add your device to your account.
+You can also manage your account with the web manager [here](https://admin.virkey.com)
+
 
 

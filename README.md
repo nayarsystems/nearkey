@@ -20,8 +20,8 @@ This feature is crucial to fix potential security or functionality flaws.
 ## Supported ESP32 boards
 - [OLIMEX ESP32 EVB](https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware)
 - [DIYMALL RELAY32](http://www.diymalls.com/esp32-wifi-bluetooth-relay-module)
-- [TTGO MINI 32](http://ttgobbs.com/viewthread.php?tid=14448&extra=&ordertype=1)
-- [TTGO T8](http://www.ttgobbs.com/redirect.php?tid=11915&goto=lastpost)
+- [TTGO MINI 32](https://es.aliexpress.com/store/product/20-EN-1-KITS-TTGO-MINI32-V2-0-ESP32-WiFi-Bluetooth-learning-kit-MINI-D1-IOT/2787042_32845377733.html)
+- [TTGO T8](https://es.aliexpress.com/store/product/T8-V1-3-TTGO-ESP32-4-MB-PSRAM-TF-3D-antena-WiFi-m-dulo-Bluetooth-ESP32/1983387_32853967655.html)
 - GENERIC A. Generic board using these GPIOs:
   * GPIO 0  <- Factory reset / Boot loader.
   * GPIO 2  -> Status LED.

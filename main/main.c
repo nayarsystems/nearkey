@@ -1805,6 +1805,10 @@ static void setup_gpio() {
         }
     #endif
 
+    #ifdef PWOFF_DETECT_GPIO
+        io_conf.pin_bit_mask |= ((uint64_t)1 << PWOFF_DETECT_GPIO);
+    #endif
+
     #ifdef RESET_BUTTON_GPIO
         io_conf.pin_bit_mask |= ((uint64_t)1 << RESET_BUTTON_GPIO);
     #else 
@@ -1988,6 +1992,15 @@ void app_main(void) {
             }
         #endif
         // --- End Monitor inputs
+
+        // Power off detect 
+        #ifdef PWOFF_DETECT_GPIO
+        int l = gpio_get_level(PWOFF_DETECT_GPIO);
+        if (l == 0) {
+            ESP_LOGW(LOG_TAG, "Power off detected");
+        }
+        #endif
+        // --- End Power off detect
 
         // Advertising enable timer
         if (adv_enable_tm > 0) {

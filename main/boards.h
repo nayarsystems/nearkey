@@ -7,6 +7,7 @@
     #define HW_BOARD "VK1X"
     #define ACTUATORS_GPIO {18, 5}
     #define ACTUATORS_TOUT {10, 10}
+    #define PWOFF_DETECT_GPIO 34
     #define MONITORS_GPIO {26, 27}
     #define MONITORS_INVERT
     #define STATUS_LED_GPIO 32

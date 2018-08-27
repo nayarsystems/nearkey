@@ -179,6 +179,7 @@ static uint8_t ca_shared[crypto_box_BEFORENMBYTES];
 // --- End Config stuff
 
 // Session stuff
+#define EGG_MAX_SIZE 2048
 #define EGG_OVERHEAD crypto_box_NONCEBYTES + crypto_box_MACBYTES
 #define SEED_SIZE 16
 #define RX_BUFFER_SIZE 2048
@@ -769,7 +770,7 @@ exitfn:
 static int append_egg(session_t *s, cw_pack_context *out) {
     int ret = 0;
     cw_pack_context pc;
-    uint8_t *blob = malloc(2048 + EGG_OVERHEAD);
+    uint8_t *blob = malloc(EGG_MAX_SIZE + EGG_OVERHEAD);
     
     if (blob == NULL) {
         ret = -1;
@@ -779,7 +780,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     if (ota.start) {
         map_size += 5;
     }
-    cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], 4096, NULL);
+    cw_pack_context_init(&pc, &blob[EGG_OVERHEAD], EGG_MAX_SIZE, NULL);
     cw_pack_map_size(&pc, map_size);
     cw_pack_cstr(&pc, "t"); cw_pack_cstr(&pc, "sta");
     if (ota_next_fv_boot) {

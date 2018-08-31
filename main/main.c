@@ -827,11 +827,11 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     return ret;
 }
 
-static void chk_attached_config(session_t *s){
+static void chk_attached_config(session_t *s, uint8_t *buf, size_t buf_len){
     uint32_t cv = 0;
     cw_unpack_context upc;
 
-    cw_unpack_context_init(&upc, s->login_data, s->login_len, NULL);
+    cw_unpack_context_init(&upc, buf, buf_len, NULL);
     int r = cw_unpack_map_search(&upc, "cf");
     if(r) {
         goto exitfn;
@@ -885,6 +885,65 @@ static void logout_session(session_t *s) {
         s->ota_lock = false;
         ota_lock = false;
     }
+}
+
+static int process_egg_frame(session_t *s) {
+    int ret = 0;
+    cw_unpack_context upc;
+    uint8_t *buf;
+    size_t buf_sz;
+    uint64_t tmp_u64;
+
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &buf_sz);
+    if (r){
+        ESP_LOGE("EGG_CONFIG", "[%d] Error obtaining encrypted blob: %d", s->h, r);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if ( buf_sz <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 1)) {
+        ESP_LOGE("EGG_CONFIG", "[%d] encrypted blob too short", s->h);
+        ret = ERR_FRAME_INVALID;
+        goto exitfn;
+    }
+    if (crypto_box_open_easy_afternm(s->rx_buffer, // Reuse rx_buffer to open server egg
+            buf + crypto_box_NONCEBYTES,
+            buf_sz - crypto_box_NONCEBYTES,
+            buf,
+            ca_shared) != 0) {
+        ESP_LOGE("EGG_CONFIG", "[%d] Invalid signature", s->h);
+        ret = ERR_CRYPTO_SIGNATURE;
+        goto exitfn;
+    }
+    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    
+    // Process attached config if present 
+    chk_attached_config(s, s->rx_buffer, s->rx_buffer_len);
+
+    // Process key version if present
+    r = cw_unpack_map_get_u64(&upc, "v", &tmp_u64);
+    if(!r){
+        if (tmp_u64 > config.key_ver) {
+            if (chk_ver_upgrade(s) == 0) {
+                ESP_LOGI("EGG_CONFIG", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+                config.key_ver = tmp_u64;
+                save_flash_config();
+            } else {
+                ESP_LOGI("EGG_CONFIG", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+            }
+        }
+    }
+
+
+
+exitfn:
+    if (ret > 0) {
+        return ret;
+    }
+
+    cw_pack_map_size(&s->pc_tx, 1);
+    cw_pack_cstr(&s->pc_tx, "t"); cw_pack_cstr(&s->pc_tx, "re");
+    return ret;
 }
 
 static int process_login_frame(session_t *s) {
@@ -1033,7 +1092,7 @@ static int process_login_frame(session_t *s) {
     } else {
         ESP_LOGE("LOGIN", "[%d] clock out of time. Only \"ts\" command allowed", s->h);
     }
-    chk_attached_config(s);
+    chk_attached_config(s, s->login_data, s->login_len);
 
     s->login = true;
     cw_pack_map_size(&s->pc_resp, 3);
@@ -1519,6 +1578,8 @@ static int cmd_cb(session_t *s) {
 
     if (strcmp(sbuf, "i") == 0) {
         ret = process_info_frame(s);
+    } else if (strcmp(sbuf, "e") == 0) {
+        ret = process_egg_frame(s);
     } else if (strcmp(sbuf, "l") == 0) {
         ret = process_login_frame(s);
     } else if (strcmp(sbuf, "c") == 0) {

@@ -333,6 +333,23 @@ static void after_config(){
     tzset();
 }
 
+static int log_purge(uint32_t bc, uint32_t lc) {
+    int purged = 0;
+
+    while (log_elements > 0) {
+        if((log[log_front].bcnt > bc) || (log[log_front].bcnt == bc && log[log_front].cnt > lc )) {
+            break;
+        }
+        log_front++;
+        if (log_front >= LOG_SIZE) {
+            log_front = 0;
+        }
+        log_elements--;
+        purged++;
+    }
+    return purged;
+}
+
 static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     int32_t usr = -1;
     int32_t sh = -1; 
@@ -897,12 +914,12 @@ static int process_egg_frame(session_t *s) {
     cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
     int r = cw_unpack_map_get_bufptr(&upc, "d", &buf, &buf_sz);
     if (r){
-        ESP_LOGE("EGG_CONFIG", "[%d] Error obtaining encrypted blob: %d", s->h, r);
+        ESP_LOGE("EGG_DOWN", "[%d] Error obtaining encrypted blob: %d", s->h, r);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
     if ( buf_sz <= (crypto_box_NONCEBYTES + crypto_box_MACBYTES + 1)) {
-        ESP_LOGE("EGG_CONFIG", "[%d] encrypted blob too short", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] encrypted blob too short", s->h);
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
@@ -911,7 +928,7 @@ static int process_egg_frame(session_t *s) {
             buf_sz - crypto_box_NONCEBYTES,
             buf,
             ca_shared) != 0) {
-        ESP_LOGE("EGG_CONFIG", "[%d] Invalid signature", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] Invalid signature", s->h);
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
@@ -925,17 +942,33 @@ static int process_egg_frame(session_t *s) {
     if(!r){
         if (tmp_u64 > config.key_ver) {
             if (chk_ver_upgrade(s) == 0) {
-                ESP_LOGI("EGG_CONFIG", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+                ESP_LOGI("EGG_DOWN", "[%d] Lock upgraded from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
                 config.key_ver = tmp_u64;
                 save_flash_config();
             } else {
-                ESP_LOGI("EGG_CONFIG", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
+                ESP_LOGI("EGG_DOWN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
             }
         }
     }
 
-
-
+    // Process Log counters
+    uint32_t log_boot = 0;
+    uint32_t log_cnt = 0;
+    r = cw_unpack_map_get_u64(&upc, "lb", &tmp_u64);
+    if (!r) {
+        log_boot = tmp_u64;
+    } else {
+        ESP_LOGE("EGG_DOWN", "[%d] field \"lb\" not present", s->h);
+    }
+    r = cw_unpack_map_get_u64(&upc, "lc", &tmp_u64);
+    if (!r) {
+        log_boot = tmp_u64;
+    } else {
+        ESP_LOGE("EGG_DOWN", "[%d] field \"lc\" not present", s->h);
+    }
+    r = log_purge(log_boot, log_cnt);
+    ESP_LOGE("EGG_DOWN", "[%d] purged %d log entries", s->h, r);
+    
 exitfn:
     if (ret > 0) {
         return ret;

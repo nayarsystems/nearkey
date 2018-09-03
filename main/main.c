@@ -241,6 +241,7 @@ typedef struct egg_header_s {
     uint8_t padding[10];
 } __attribute__((packed)) egg_header_t;
 static uint32_t egg_cnt;
+static time_t   egg_timestamp;
 // --- End Egg stuff
 
 // Actuator timers
@@ -787,6 +788,7 @@ exitfn:
 static int append_egg(session_t *s, cw_pack_context *out) {
     int ret = 0;
     cw_pack_context pc;
+    time_t now = time(NULL);
     uint8_t *blob = malloc(EGG_MAX_SIZE + EGG_OVERHEAD);
     
     if (blob == NULL) {
@@ -809,7 +811,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     cw_pack_cstr(&pc, "cv"); cw_pack_unsigned(&pc, config.cfg_ver);
     cw_pack_cstr(&pc, "bo"); cw_pack_cstr(&pc, HW_BOARD);
     cw_pack_cstr(&pc, "pr"); cw_pack_cstr(&pc, PRODUCT);
-    cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, time(NULL));
+    cw_pack_cstr(&pc, "ts"); cw_pack_unsigned(&pc, now);
     log_append_msgpack(&pc);
     if (ota.start) {
         cw_pack_cstr(&pc, "st"); cw_pack_boolean(&pc, ota.start);
@@ -823,6 +825,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
     size_t mlen = pc.current - pc.start;
     egg_header_t *h = (egg_header_t *)blob;
     memcpy(&h->id, config.vk_id, sizeof(h->id));
+    egg_timestamp = now;
     egg_cnt++;
     if (egg_cnt == 0) { // egg_cnt overflow
         config.boot_cnt++;
@@ -952,23 +955,40 @@ static int process_egg_frame(session_t *s) {
     }
 
     // Process Log counters
-    uint32_t log_boot = 0;
-    uint32_t log_cnt = 0;
+    uint32_t rem_log_boot = 0;
+    uint32_t rem_log_cnt = 0;
     r = cw_unpack_map_get_u64(&upc, "lb", &tmp_u64);
     if (!r) {
-        log_boot = tmp_u64;
+        rem_log_boot = tmp_u64;
     } else {
         ESP_LOGE("EGG_DOWN", "[%d] field \"lb\" not present", s->h);
     }
     r = cw_unpack_map_get_u64(&upc, "lc", &tmp_u64);
     if (!r) {
-        log_boot = tmp_u64;
+        rem_log_cnt = tmp_u64;
     } else {
         ESP_LOGE("EGG_DOWN", "[%d] field \"lc\" not present", s->h);
     }
-    r = log_purge(log_boot, log_cnt);
+    r = log_purge(rem_log_boot, rem_log_cnt);
     ESP_LOGE("EGG_DOWN", "[%d] purged %d log entries", s->h, r);
     
+    // Process last EGG timestamp
+    uint32_t rem_egg_boot = 0;
+    uint32_t rem_egg_cnt = 0;
+    r = cw_unpack_map_get_u64(&upc, "eb", &tmp_u64);
+    if (!r) {
+        rem_egg_boot = tmp_u64;
+    } else {
+        ESP_LOGE("EGG_DOWN", "[%d] field \"eb\" not present", s->h);
+    }
+    r = cw_unpack_map_get_u64(&upc, "ec", &tmp_u64);
+    if (!r) {
+        rem_egg_cnt = tmp_u64;
+    } else {
+        ESP_LOGE("EGG_DOWN", "[%d] field \"ec\" not present", s->h);
+    }
+
+
 exitfn:
     if (ret > 0) {
         return ret;

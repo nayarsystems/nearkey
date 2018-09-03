@@ -961,13 +961,13 @@ static int process_egg_frame(session_t *s) {
     if (!r) {
         rem_log_boot = tmp_u64;
     } else {
-        ESP_LOGE("EGG_DOWN", "[%d] field \"lb\" not present", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "lb");
     }
     r = cw_unpack_map_get_u64(&upc, "lc", &tmp_u64);
     if (!r) {
         rem_log_cnt = tmp_u64;
     } else {
-        ESP_LOGE("EGG_DOWN", "[%d] field \"lc\" not present", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "lc");
     }
     r = log_purge(rem_log_boot, rem_log_cnt);
     ESP_LOGE("EGG_DOWN", "[%d] purged %d log entries", s->h, r);
@@ -975,18 +975,38 @@ static int process_egg_frame(session_t *s) {
     // Process last EGG timestamp
     uint32_t rem_egg_boot = 0;
     uint32_t rem_egg_cnt = 0;
+    time_t rem_egg_timestamp = 0;
     r = cw_unpack_map_get_u64(&upc, "eb", &tmp_u64);
     if (!r) {
         rem_egg_boot = tmp_u64;
     } else {
-        ESP_LOGE("EGG_DOWN", "[%d] field \"eb\" not present", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "eb");
     }
     r = cw_unpack_map_get_u64(&upc, "ec", &tmp_u64);
     if (!r) {
         rem_egg_cnt = tmp_u64;
     } else {
-        ESP_LOGE("EGG_DOWN", "[%d] field \"ec\" not present", s->h);
+        ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "ec");
     }
+    r = cw_unpack_map_get_u64(&upc, "ts", &tmp_u64);
+    if (!r) {
+        rem_egg_timestamp = tmp_u64;
+    } else {
+        ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "ts");
+    }
+    if (rem_egg_boot == config.boot_cnt && rem_egg_cnt == egg_cnt) {
+        time_t now = time(NULL);
+        int gap = now - egg_timestamp;
+        ESP_LOGI("EGG_DOWN", "[%d] Egg age less than %d seconds", s->h, gap);
+        if ((gap >= 0) && (gap <= 10)){
+            gap = abs(now - rem_egg_timestamp);
+            ESP_LOGI("EGG_DOWN", "[%d] local clock differs %d seconds from server clock", s->h, gap);
+            if (gap > 60) {
+                ESP_LOGW("EGG_DOWN", "[%d] setting local clock using server clock", s->h);
+            }
+        }
+    }
+
 
 
 exitfn:

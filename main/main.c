@@ -1002,12 +1002,14 @@ static int process_egg_frame(session_t *s) {
             gap = abs(now - rem_egg_timestamp);
             ESP_LOGI("EGG_DOWN", "[%d] local clock differs %d seconds from server clock", s->h, gap);
             if (gap > 60) {
-                ESP_LOGW("EGG_DOWN", "[%d] setting local clock using server clock", s->h);
+                struct timeval tv={0};
+                tv.tv_sec = rem_egg_timestamp;
+                settimeofday(&tv, NULL);
+                systohc();
+                ESP_LOGI("EGG_DOWN", "[%d] Timestamp set to: %llu", s->h, (unsigned long long) rem_egg_timestamp)
             }
         }
     }
-
-
 
 exitfn:
     if (ret > 0) {

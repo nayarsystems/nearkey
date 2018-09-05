@@ -926,7 +926,7 @@ static int process_egg_frame(session_t *s) {
         ret = ERR_FRAME_INVALID;
         goto exitfn;
     }
-    if (crypto_box_open_easy_afternm(s->rx_buffer, // Reuse rx_buffer to open server egg
+    if (crypto_box_open_easy_afternm(buf + crypto_box_NONCEBYTES, // Reuse buffer to open server egg
             buf + crypto_box_NONCEBYTES,
             buf_sz - crypto_box_NONCEBYTES,
             buf,
@@ -935,7 +935,7 @@ static int process_egg_frame(session_t *s) {
         ret = ERR_CRYPTO_SIGNATURE;
         goto exitfn;
     }
-    cw_unpack_context_init(&upc, s->rx_buffer, s->rx_buffer_len, NULL);
+    cw_unpack_context_init(&upc, buf + crypto_box_NONCEBYTES, buf_sz - crypto_box_NONCEBYTES, NULL);
     
     // Process attached config if present 
     chk_attached_config(s, s->rx_buffer, s->rx_buffer_len);
@@ -970,7 +970,7 @@ static int process_egg_frame(session_t *s) {
         ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "lc");
     }
     r = log_purge(rem_log_boot, rem_log_cnt);
-    ESP_LOGE("EGG_DOWN", "[%d] purged %d log entries", s->h, r);
+    ESP_LOGI("EGG_DOWN", "[%d] purged %d log entries", s->h, r);
     
     // Process last EGG timestamp
     uint32_t rem_egg_boot = 0;
@@ -990,6 +990,7 @@ static int process_egg_frame(session_t *s) {
     }
     r = cw_unpack_map_get_u64(&upc, "ts", &tmp_u64);
     if (!r) {
+        ESP_LOGI("EGG_DOWN", "[%d] Raw timestamp from egg: %llu", s->h, tmp_u64);
         rem_egg_timestamp = tmp_u64;
     } else {
         ESP_LOGE("EGG_DOWN", "[%d] field \"%s\" not present", s->h, "ts");

@@ -1009,6 +1009,7 @@ static int process_egg_frame(session_t *s) {
                 settimeofday(&tv, NULL);
                 systohc();
                 ESP_LOGI("EGG_DOWN", "[%d] Timestamp set to: %llu", s->h, (unsigned long long) rem_egg_timestamp)
+                log_add(NULL, LOG_OP_TIME_SET, 0, 0);
             }
         }
     }

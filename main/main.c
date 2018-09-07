@@ -938,7 +938,7 @@ static int process_egg_frame(session_t *s) {
     cw_unpack_context_init(&upc, buf + crypto_box_NONCEBYTES, buf_sz - crypto_box_NONCEBYTES, NULL);
     
     // Process attached config if present 
-    chk_attached_config(s, s->rx_buffer, s->rx_buffer_len);
+    chk_attached_config(s, buf + crypto_box_NONCEBYTES, buf_sz - crypto_box_NONCEBYTES);
 
     // Process key version if present
     r = cw_unpack_map_get_u64(&upc, "v", &tmp_u64);

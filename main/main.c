@@ -336,9 +336,10 @@ static void after_config(){
 
 static int log_purge(uint32_t bc, uint32_t lc) {
     int purged = 0;
+    time_t now = time(NULL);
 
     while (log_elements > 0) {
-        if((log[log_front].bcnt > bc) || (log[log_front].bcnt == bc && log[log_front].cnt > lc )) {
+        if((log[log_front].bcnt > bc) || (log[log_front].bcnt == bc && log[log_front].cnt > lc ) || (now - log[log_front].ts < 60)) {
             break;
         }
         log_front++;
@@ -354,7 +355,7 @@ static int log_purge(uint32_t bc, uint32_t lc) {
 static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     int32_t usr = -1;
     int32_t sh = -1; 
-    int32_t now = time(NULL);
+    time_t now = time(NULL);
 
     if (s != NULL) {
         usr = s->user;
@@ -397,7 +398,7 @@ static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
         log_rear = 0;
     }
     log_elements++;
-    ESP_LOGI("LOGGER","[%d] boot:%d cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d", sh, config.boot_cnt, log_cnt, usr, now, op, code2str(log_ops, op), par, res);
+    ESP_LOGI("LOGGER","[%d] boot:%d cnt:%d usr:%d ts:%d op:%d opd:\"%s\" par:%d res:%d", sh, config.boot_cnt, log_cnt, usr, (int)now, op, code2str(log_ops, op), par, res);
 }
 
 static void log_append_msgpack(cw_pack_context *pc){

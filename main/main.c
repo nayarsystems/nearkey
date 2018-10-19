@@ -1008,7 +1008,7 @@ static int process_egg_frame(session_t *s) {
                 tv.tv_sec = rem_egg_timestamp;
                 settimeofday(&tv, NULL);
                 systohc();
-                ESP_LOGI("EGG_DOWN", "[%d] Timestamp set to: %llu", s->h, (unsigned long long) rem_egg_timestamp)
+                ESP_LOGI("EGG_DOWN", "[%d] Timestamp set to: %llu", s->h, (unsigned long long) rem_egg_timestamp);
                 log_add(NULL, LOG_OP_TIME_SET, 0, 0);
             }
         }
@@ -1203,7 +1203,7 @@ static int do_cmd_ts(session_t *s){
     if (r == 0){
         tv.tv_sec = (time_t) tmp_u64;
         settimeofday(&tv, NULL);
-        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64)
+        ESP_LOGI("CMD", "[%d] Timestamp set to: %llu", s->h, tmp_u64);
         systohc();
     }
 
@@ -1828,7 +1828,7 @@ static esp_err_t load_flash_config() {
         }
     }
     if(size != sizeof(cfg_buf)) {
-        ESP_LOGW(LOG_TAG, "Config size mismatch!")
+        ESP_LOGW(LOG_TAG, "Config size mismatch!");
         if(size > sizeof(cfg_buf)) {
             size = sizeof(cfg_buf);
         }
@@ -1900,7 +1900,7 @@ static esp_err_t load_flash_config() {
         }
     }
 
-    ESP_LOGI(LOG_TAG, "Config loaded")
+    ESP_LOGI(LOG_TAG, "Config loaded");
     err = ESP_OK;
 exitfn:
     return err;

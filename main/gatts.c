@@ -18,7 +18,6 @@
 #include <string.h>
 
 #include "esp_bt.h"
-#include "bta_api.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -124,7 +123,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
-        esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         // advertising start complete event to indicate advertising start successfully or failed
@@ -196,9 +194,9 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
         if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].descr_handle) {
             notif_stats[param->write.conn_id] = *((uint16_t*)param->write.value);
             if(notif_stats[param->write.conn_id] & 1) {
-                ESP_LOGI(LOG_TAG, "[%d] Notifications enabled", param->write.conn_id)
+                ESP_LOGI(LOG_TAG, "[%d] Notifications enabled", param->write.conn_id);
             } else {
-                ESP_LOGI(LOG_TAG, "[%d] Notifications disabled", param->write.conn_id)
+                ESP_LOGI(LOG_TAG, "[%d] Notifications disabled", param->write.conn_id);
             }
             if(param->write.need_rsp) {
                 esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);

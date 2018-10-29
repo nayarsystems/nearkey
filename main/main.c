@@ -2133,7 +2133,9 @@ void app_main(void) {
         if (adv_enable_tm > 0) {
             adv_enable_tm --;
         } else {
-            gatts_start_adv();
+            if (gatts_start_adv() != ESP_OK){
+                reboot();
+            }
             adv_enable_tm = ADV_ENABLE_TIME;
         }
         // --- End Advertising enable timer

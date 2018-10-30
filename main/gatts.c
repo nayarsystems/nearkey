@@ -123,6 +123,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
+        esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         // advertising start complete event to indicate advertising start successfully or failed
@@ -347,7 +348,7 @@ int init_gatts(gatts_connect_cb_t conn_cb,
         return ESP_FAIL;
     }
 
-    ret = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
+    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s enable controller failed", __func__);
         return ESP_FAIL;
@@ -362,11 +363,11 @@ int init_gatts(gatts_connect_cb_t conn_cb,
         ESP_LOGE(LOG_TAG, "%s enable bluetooth failed", __func__);
         return ESP_FAIL;
     }
-    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P7);
+    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s ble tx power set failed", __func__);
     }
-    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P7);
+    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s ble tx power set failed", __func__);
     }

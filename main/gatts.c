@@ -82,6 +82,7 @@ static esp_ble_adv_params_t test_adv_params = {
 static gatts_connect_cb_t gatts_connect_cb;
 static gatts_disconnect_cb_t gatts_disconnect_cb;
 static gatts_rx_cb_t gatts_rx_cb;
+static gatts_evt_cb_t gatts_evt_cb;
 // ---
 
 
@@ -117,27 +118,24 @@ static struct gatts_profile_inst gl_profile_tab[PROFILE_NUM] = {
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
     switch(event) {
     case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-        esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-        esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
-        esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         // advertising start complete event to indicate advertising start successfully or failed
         if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(LOG_TAG, "Advertising start failed");
+            gatts_evt_cb(GATTS_EVT_ADV_START_ERR);
         } else {
-            ESP_LOGD(LOG_TAG, "Start adv successfully");
+            gatts_evt_cb(GATTS_EVT_ADV_START_OK);
         }
         break;
     case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
         if(param->adv_stop_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(LOG_TAG, "Advertising stop failed");
+            gatts_evt_cb(GATTS_EVT_ADV_STOP_ERR);
         } else {
-            ESP_LOGD(LOG_TAG, "Stop adv successfully");
+            gatts_evt_cb(GATTS_EVT_ADV_STOP_OK);
         }
         break;
     default:
@@ -291,7 +289,7 @@ gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             gatts_disconnect_cb(param->disconnect.conn_id);
             notif_stats[param->disconnect.conn_id] = 0;
         }
-        esp_ble_gap_start_advertising(&test_adv_params);
+        //esp_ble_gap_start_advertising(&test_adv_params);
         break;
     case ESP_GATTS_OPEN_EVT:
     case ESP_GATTS_CANCEL_OPEN_EVT:
@@ -333,12 +331,14 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 int init_gatts(gatts_connect_cb_t conn_cb,
                gatts_disconnect_cb_t disconn_cb,
                gatts_rx_cb_t cmd_cb,
+               gatts_evt_cb_t evt_cb,
                const uint8_t *vk_id) {
     esp_err_t ret;
 
     gatts_connect_cb = conn_cb;
     gatts_disconnect_cb = disconn_cb;
     gatts_rx_cb = cmd_cb;
+    gatts_evt_cb = evt_cb;
     memcpy(virkey_id, vk_id, 6);
 
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();

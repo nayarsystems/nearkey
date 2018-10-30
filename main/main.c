@@ -118,8 +118,8 @@ static CODE errors[] = {
     {ERR_FLASH_PRODUCT, "Incompatible product firmware"},
     {-1, NULL},
 };
-
 // --- End Errors
+
 
 // Log stuff
 #define LOG_SIZE 30
@@ -261,6 +261,7 @@ static uint32_t reset_button_tm;
 // Advertising enable timer
 #define ADV_ENABLE_TIME 300 // 30 seconds
 static uint32_t adv_enable_tm;
+static time_t adv_watchdog;
 // --- End Advertising enable timer
 
 // Function declarations
@@ -1728,6 +1729,16 @@ exitfn:
     return retval;
 }
 
+static int evt_cb(int evt) {
+    while(!xSemaphoreTake(session_sem, portMAX_DELAY));
+    ESP_LOGI("EVT", "Received BLE event: %d", evt);
+    if (evt == GATTS_EVT_ADV_START_OK) {
+        adv_watchdog = ADV_ENABLE_TIME + 50;
+    }
+    xSemaphoreGive(session_sem);
+    return 0;
+}
+
 static esp_err_t init_flash() {
     esp_err_t err = nvs_flash_init();
     if(err == ESP_ERR_NVS_NO_FREE_PAGES) {
@@ -2037,7 +2048,8 @@ void app_main(void) {
     bin2b64(ca_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "CA key: %s", chbuf);
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, config.vk_id));
+    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, evt_cb, config.vk_id));
+    adv_watchdog = 50;
 
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -2133,10 +2145,15 @@ void app_main(void) {
         if (adv_enable_tm > 0) {
             adv_enable_tm --;
         } else {
-            if (gatts_start_adv() != ESP_OK){
-                reboot();
-            }
+            ESP_LOGI("LOG_TAG", "starting advertising");
+            gatts_start_adv();
             adv_enable_tm = ADV_ENABLE_TIME;
+        }
+        if (adv_watchdog > 0) {
+            adv_watchdog --;
+        } else {
+            ESP_LOGE("LOG_TAG", "ADV START NOT RESPOND!!!");
+            adv_watchdog = 50;
         }
         // --- End Advertising enable timer
 

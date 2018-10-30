@@ -2152,8 +2152,8 @@ void app_main(void) {
         if (adv_watchdog > 0) {
             adv_watchdog --;
         } else {
-            ESP_LOGE("LOG_TAG", "ADV START NOT RESPOND!!!");
-            adv_watchdog = 50;
+            ESP_LOGE("LOG_TAG", "ADV START NOT RESPOND!!! REBOOT!!!");
+            reboot();
         }
         // --- End Advertising enable timer
 

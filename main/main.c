@@ -1,5 +1,5 @@
 #define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
-#define FW_VER 40
+#define FW_VER 41
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -2145,7 +2145,6 @@ void app_main(void) {
         if (adv_enable_tm > 0) {
             adv_enable_tm --;
         } else {
-            ESP_LOGI("LOG_TAG", "starting advertising");
             gatts_start_adv();
             adv_enable_tm = ADV_ENABLE_TIME;
         }

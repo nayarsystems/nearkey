@@ -1603,7 +1603,8 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
     SETPTR(s->resp_buffer, malloc(RESP_BUFFER_SIZE));
     ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, s->address[0], s->address[1],
              s->address[2], s->address[3], s->address[4], s->address[5]);
-    gatts_start_adv();
+    //gatts_start_adv();
+    adv_enable_tm = 20;
     xSemaphoreGive(session_sem);
     return ret;
 }
@@ -1733,8 +1734,14 @@ static int evt_cb(int evt) {
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     ESP_LOGI("EVT", "Received BLE event: %d", evt);
     if (evt == GATTS_EVT_ADV_START_OK) {
-        adv_watchdog = ADV_ENABLE_TIME + 50;
+        adv_watchdog = 0;
+        goto exitfn;
     }
+    if (evt == GATTS_EVT_ADV_START_ERR) {
+        reboot();
+        goto exitfn;
+    }
+exitfn:
     xSemaphoreGive(session_sem);
     return 0;
 }
@@ -2049,8 +2056,7 @@ void app_main(void) {
     ESP_LOGI(LOG_TAG, "CA key: %s", chbuf);
 
     ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, evt_cb, config.vk_id));
-    adv_watchdog = 50;
-
+    adv_enable_tm = 5;
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY));
@@ -2144,15 +2150,17 @@ void app_main(void) {
         // Advertising enable timer
         if (adv_enable_tm > 0) {
             adv_enable_tm --;
-        } else {
-            gatts_start_adv();
-            adv_enable_tm = ADV_ENABLE_TIME;
+            if (!adv_enable_tm) {
+                gatts_start_adv();
+                adv_watchdog = 10;
+            }
         }
         if (adv_watchdog > 0) {
             adv_watchdog --;
-        } else {
-            ESP_LOGE("LOG_TAG", "ADV START NOT RESPOND!!! REBOOT!!!");
-            reboot();
+            if (!adv_watchdog) {
+                ESP_LOGE("LOG_TAG", "ADV START NOT RESPOND!!! REBOOT!!!");
+                reboot();
+            }
         }
         // --- End Advertising enable timer
 

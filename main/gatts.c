@@ -363,11 +363,11 @@ int init_gatts(gatts_connect_cb_t conn_cb,
         ESP_LOGE(LOG_TAG, "%s enable bluetooth failed", __func__);
         return ESP_FAIL;
     }
-    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, 7);
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s ble tx power set failed", __func__);
     }
-    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+    ret = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, 7);
     if(ret) {
         ESP_LOGE(LOG_TAG, "%s ble tx power set failed", __func__);
     }

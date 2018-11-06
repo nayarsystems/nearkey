@@ -44,6 +44,12 @@
 static const char magic[] = "vkfwmark:" "{\"bo\":\"" HW_BOARD "\",\"pr\":\"" PRODUCT "\",\"fv\":" STR(FW_VER) "}";
 //
 
+// Default BLE values
+static const uint8_t def_srv[] = {0x13, 0x1e, 0x48, 0x11, 0xc2, 0x5c, 0x2c, 0xa6, 0xd2, 0x45, 0x34, 0x81, 0x00, 0x00, 0x00, 0x00};
+static const uint8_t def_char[] = {0x13, 0x1e, 0x48, 0x11, 0xc2, 0x5c, 0x2c, 0xa6, 0xd2, 0x45, 0x34, 0x81, 0x01, 0x00, 0x00, 0x00};
+static const char* def_name = "virkey.com";
+// 
+
 // Boards config
 #ifdef ACTUATORS_GPIO
     static int const act_gpio[] = ACTUATORS_GPIO;
@@ -2056,7 +2062,21 @@ void app_main(void) {
     bin2b64(ca_key, crypto_box_PUBLICKEYBYTES, chbuf, sizeof(chbuf));
     ESP_LOGI(LOG_TAG, "CA key: %s", chbuf);
 
-    ESP_ERROR_CHECK(init_gatts(connect_cb, disconnect_cb, rx_cb, evt_cb, config.vk_id));
+    gatts_config_t gatts_cfg = {
+        .conn_cb = connect_cb,
+        .disconn_cb = disconnect_cb,
+        .rx_cb = rx_cb,
+        .evt_cb = evt_cb,
+        .manufacturer_id = {0x00,0x00},
+        .use_srv_data = true,
+        .adv_dbm = 99, // Max power
+    };
+    memcpy(gatts_cfg.device_id, config.vk_id, sizeof(gatts_cfg.device_id));
+    memcpy(gatts_cfg.name, def_name, sizeof(gatts_cfg.name));
+    memcpy(gatts_cfg.service_uuid128, def_srv, sizeof(gatts_cfg.service_uuid128));
+    memcpy(gatts_cfg.characteristic_uuid_128, def_char, sizeof(gatts_cfg.characteristic_uuid_128));
+    ESP_ERROR_CHECK(init_gatts(&gatts_cfg));
+
     adv_disable_tm = 5;
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);

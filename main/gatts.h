@@ -12,11 +12,22 @@ typedef int (*gatts_disconnect_cb_t)(uint16_t conn);
 typedef int (*gatts_rx_cb_t)(uint16_t conn, const uint8_t* cmd, size_t size);
 typedef int (*gatts_evt_cb_t)(int evt);
 
-int init_gatts(gatts_connect_cb_t conn_cb,
-               gatts_disconnect_cb_t disconn_cb,
-               gatts_rx_cb_t rx_cb,
-               gatts_evt_cb_t evt_cb,
-               const uint8_t *vk_id);
+typedef struct gatts_config_s {
+    gatts_connect_cb_t conn_cb;
+    gatts_disconnect_cb_t disconn_cb;
+    gatts_rx_cb_t rx_cb;
+    gatts_evt_cb_t evt_cb;
+    uint8_t manufacturer_id[2];
+    uint8_t device_id[6];
+    uint8_t service_uuid128[16];
+    uint8_t characteristic_uuid_128[16];
+    bool use_srv_data;
+    char name[17];
+    int adv_dbm;
+} gatts_config_t;
+
+
+int init_gatts(const gatts_config_t *cfg);
 
 esp_err_t gatts_close_connection(uint16_t conn_id, uint16_t gatts_if);
 ssize_t gatts_send_response(uint16_t conn_id, uint16_t gatts_if, const uint8_t *resp, size_t len);

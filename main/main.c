@@ -265,8 +265,7 @@ static uint32_t reset_button_tm;
 // --- End Reset button timer
 
 // Advertising enable timer
-#define ADV_RESET_TIME 600 // 60 seconds
-static uint32_t adv_disable_tm;
+#define ADV_RESET_TIME 100 // 10 seconds
 static uint32_t adv_enable_tm;
 static time_t adv_watchdog;
 // --- End Advertising enable timer
@@ -1610,7 +1609,7 @@ static int connect_cb(uint16_t conn, uint16_t gatts_if, const esp_bd_addr_t addr
     SETPTR(s->resp_buffer, malloc(RESP_BUFFER_SIZE));
     ESP_LOGI(LOG_TAG, "[%d] Connection from: %02x:%02x:%02x:%02x:%02x:%02x", conn, s->address[0], s->address[1],
              s->address[2], s->address[3], s->address[4], s->address[5]);
-    adv_disable_tm = 10;
+    adv_enable_tm = 10;
     xSemaphoreGive(session_sem);
     return ret;
 }
@@ -1739,13 +1738,8 @@ exitfn:
 static int evt_cb(int evt) {
     while(!xSemaphoreTake(session_sem, portMAX_DELAY));
     ESP_LOGI("EVT", "Received BLE event: %d", evt);
-    if ((evt == GATTS_EVT_ADV_START_OK) || (evt == GATTS_EVT_ADV_STOP_OK)) {
+    if (evt == GATTS_EVT_ADV_START_OK) {
         adv_watchdog = 0;
-        adv_disable_tm = ADV_RESET_TIME;
-        goto exitfn;
-    }
-    if ((evt == GATTS_EVT_ADV_START_ERR) || (evt == GATTS_EVT_ADV_STOP_ERR)) {
-        reboot();
         goto exitfn;
     }
 exitfn:
@@ -2077,7 +2071,7 @@ void app_main(void) {
     memcpy(gatts_cfg.characteristic_uuid_128, def_char, sizeof(gatts_cfg.characteristic_uuid_128));
     ESP_ERROR_CHECK(init_gatts(&gatts_cfg));
 
-    adv_disable_tm = 5;
+    adv_enable_tm = 5;
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY));
@@ -2168,20 +2162,11 @@ void app_main(void) {
         #endif
         // --- End Monitor inputs
 
-        // Advertising reset timer
-        if (adv_disable_tm > 0){
-            adv_disable_tm --;
-            if (!adv_disable_tm) {
-                gatts_stop_adv();
-                adv_watchdog = 5;
-                adv_enable_tm = 10;
-            }
-        }
-
         // Advertising enable timer
         if (adv_enable_tm > 0) {
             adv_enable_tm --;
             if (!adv_enable_tm) {
+                adv_enable_tm = ADV_RESET_TIME;
                 gatts_start_adv();
                 adv_watchdog = 5;
             }

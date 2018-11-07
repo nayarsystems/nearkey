@@ -1,5 +1,5 @@
 # Override some defaults so BT stack is enabled
-# and WiFi disabled by default in this example
+# and WiFi disabled by default
 CONFIG_PYTHON="python2"
 CONFIG_WIFI_ENABLED=n
 CONFIG_ESP32_TIME_SYSCALL_USE_FRC1=y
@@ -17,7 +17,6 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_APP_OFFSET=0x10000
 CONFIG_ESPTOOLPY_FLASHSIZE=y
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-
 
 #
 # Bluetooth 

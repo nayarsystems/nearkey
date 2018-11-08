@@ -856,7 +856,7 @@ static int append_egg(session_t *s, cw_pack_context *out) {
 }
 
 static void chk_attached_config(session_t *s, uint8_t *buf, size_t buf_len){
-    uint32_t cv = 0;
+    uint32_t u32_tmp = 0;
     cw_unpack_context upc;
 
     cw_unpack_context_init(&upc, buf, buf_len, NULL);
@@ -865,17 +865,29 @@ static void chk_attached_config(session_t *s, uint8_t *buf, size_t buf_len){
         goto exitfn;
     }
 
-    r = cw_unpack_map_get_u32(&upc, "cv", &cv);
+    r = cw_unpack_map_get_u32(&upc, "cv", &u32_tmp);
     if(r) {
         ESP_LOGE("ATTACHED_CONFIG", "[%d] \"cv\" %s", s->h, cw_unpack_map_strerr(r));
         goto exitfn;
     }
 
-    if (cv <= config.cfg_ver) {
+    if (u32_tmp <= config.cfg_ver) {
         ESP_LOGI("ATTACHED_CONFIG", "[%d] Old config attached on key", s->h);
         goto exitfn;
     }
-    config.cfg_ver = cv;
+    config.cfg_ver = u32_tmp;
+
+    r = cw_unpack_map_get_u32(&upc, "bc", &u32_tmp);
+    if(r) {
+        ESP_LOGE("ATTACHED_CONFIG", "[%d] \"bc\" %s", s->h, cw_unpack_map_strerr(r));
+    } else {
+        if (u32_tmp > config.boot_cnt) {
+            config.boot_cnt = u32_tmp  + 1;
+            egg_cnt = 0;
+            log_cnt = 0;
+            ESP_LOGI("ATTACHED_CONFIG", "[%d] Synced boot counter to: %d", s->h, config.boot_cnt);
+        }  
+    }
 
     r = cw_unpack_map_get_str(&upc, "tz", config.tz_data, sizeof(config.tz_data), NULL);
     if(r) {
@@ -2167,8 +2179,8 @@ void app_main(void) {
             adv_enable_tm --;
             if (!adv_enable_tm) {
                 adv_enable_tm = ADV_RESET_TIME;
-                gatts_start_adv();
                 adv_watchdog = 5;
+                gatts_start_adv();
             }
         }
         if (adv_watchdog > 0) {

@@ -885,6 +885,7 @@ static void chk_attached_config(session_t *s, uint8_t *buf, size_t buf_len){
             config.boot_cnt = u32_tmp  + 1;
             egg_cnt = 0;
             log_cnt = 0;
+            log_purge(config.boot_cnt, 0);
             ESP_LOGI("ATTACHED_CONFIG", "[%d] Synced boot counter to: %d", s->h, config.boot_cnt);
         }  
     }

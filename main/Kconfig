@@ -45,13 +45,21 @@ choice
         help
             Selects Armtronix Quadrelay board.
             GPIO 0  <- Factory reset / Boot loader
-            gpio 2  -> Status LED (board led)
+            GPIO 2  -> Status LED (board led)
             GPIO 4  -> Actuator 0 (Relay 1)
             GPIO 12 -> Actuator 1 (Relay 2)
             GPIO 13 -> Actuator 2 (Relay 3)
             GPIO 14 -> Actuator 3 (Relay 4)
             https://www.tindie.com/products/Armtronix/wifibt-esp32-quad-relay-board-amazon-alexa/
             https://github.com/armtronix/Wifi_Bt_Esp32_Quad_Relay/blob/master/Doc/A0011_Wifi_BT_Quad_Relay_Board.pdf
+    config VK_BOARD_REMOTSY_DEVRELAY
+        bool "REMOTSY DEVRELAY"
+        help
+            Selects Remotsy developer relay board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 27 -> Actuator 0 (Relay 1)
+            https://www.tindie.com/products/jorgeci/simple-developer-relay-board-using-the-esp32-2/
+
     config VK_BOARD_TTGO_MINI_32
         bool "TTGO MINI 32"
         help

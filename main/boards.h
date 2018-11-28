@@ -48,6 +48,14 @@
     #define RESET_BUTTON_GPIO 0
 #endif
 
+// Remotsy relay
+#ifdef CONFIG_VK_BOARD_REMOTSY_DEVRELAY
+    #define HW_BOARD "REMOTSY_DEVRELAY"
+    #define ACTUATORS_GPIO {27}
+    #define ACTUATORS_TOUT {10}
+    #define RESET_BUTTON_GPIO 0
+#endif
+
 
 // TTGO MINI 32
 #ifdef CONFIG_VK_BOARD_TTGO_MINI_32

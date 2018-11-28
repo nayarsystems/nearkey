@@ -39,6 +39,16 @@
     #define RESET_BUTTON_GPIO 0
 #endif
 
+// Armtronix quad relay
+#ifdef CONFIG_VK_BOARD_ARMTRONIX_QUADRELAY
+    #define HW_BOARD "ARMTRONIX_QUADRELAY"
+    #define ACTUATORS_GPIO {4, 12, 13, 14}
+    #define ACTUATORS_TOUT {10, 10, 10, 10}
+    #define STATUS_LED_GPIO 2
+    #define RESET_BUTTON_GPIO 0
+#endif
+
+
 // TTGO MINI 32
 #ifdef CONFIG_VK_BOARD_TTGO_MINI_32
     #define HW_BOARD "TTGO_MINI_32"

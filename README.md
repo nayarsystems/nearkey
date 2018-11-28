@@ -20,6 +20,7 @@ This feature is crucial to fix potential security or functionality flaws.
 ## Supported ESP32 boards
 - [OLIMEX ESP32 EVB](https://www.olimex.com/Products/IoT/ESP32-EVB/open-source-hardware)
 - [DIYMALL RELAY32](http://www.diymalls.com/esp32-wifi-bluetooth-relay-module)
+- [ARMTRONIX QUAD RELAY](https://www.tindie.com/products/Armtronix/wifibt-esp32-quad-relay-board-amazon-alexa/)
 - [TTGO MINI 32 (with relay shield)](https://es.aliexpress.com/store/product/20-EN-1-KITS-TTGO-MINI32-V2-0-ESP32-WiFi-Bluetooth-learning-kit-MINI-D1-IOT/2787042_32845377733.html)
 - [TTGO T8](https://es.aliexpress.com/store/product/T8-V1-3-TTGO-ESP32-4-MB-PSRAM-TF-3D-antena-WiFi-m-dulo-Bluetooth-ESP32/1983387_32853967655.html)
 - GENERIC A. Generic board using these GPIOs:

@@ -1,5 +1,5 @@
 #define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
-#define FW_VER 49
+#define FW_VER 50
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -362,7 +362,7 @@ static int log_purge(uint32_t bc, uint32_t lc) {
 
 static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     int32_t usr = -1;
-    int32_t sh = -1; 
+    int32_t sh = -1;
     int32_t log_level = 0; 
     time_t now = time(NULL);
 

@@ -200,6 +200,7 @@ typedef struct session_s {
     uint16_t gatts_if;
     int32_t  user;
     uint32_t key_version;
+    int32_t log_level;
     uint8_t shared_key[crypto_box_BEFORENMBYTES];
     uint8_t seed[SEED_SIZE];
     uint8_t nonce[32];
@@ -362,12 +363,23 @@ static int log_purge(uint32_t bc, uint32_t lc) {
 static void log_add(session_t *s, int32_t op, int32_t par, int32_t res) {
     int32_t usr = -1;
     int32_t sh = -1; 
+    int32_t log_level = 0; 
     time_t now = time(NULL);
 
     if (s != NULL) {
         usr = s->user;
         sh = s->h;
+        log_level = s->log_level;
     }
+
+    if (log_level > 0) {
+        if (op >= 100) {
+            return;
+        } else {
+            usr = -1;
+        }
+    }
+
     while (log_elements >= LOG_SIZE) {
         log_front++;
         if (log_front >= LOG_SIZE) {
@@ -1181,6 +1193,13 @@ static int process_login_frame(session_t *s) {
             ESP_LOGI("LOGIN", "[%d] Lock upgrade delayed from version:%llu to version:%llu", s->h, config.key_ver, tmp_u64);
         }
     }
+    r = cw_unpack_map_get_i32(&upc, "ll", &s->log_level);
+    if (r == 0){
+        if (s->log_level > 0){
+            ESP_LOGI("LOGIN", "[%d] User logs disabled", s->h);
+        } 
+    }
+
     if(chk_time()){
         if (chk_expiration(s) != 0) {
             err = ERR_KEY_EXPIRED;

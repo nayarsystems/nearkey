@@ -2033,7 +2033,6 @@ static int get_reset_button() {
 
 static void rgb_led(int r, int g, int b) {
 #ifdef CONFIG_VK_BOARD_REMOTSY_DEVRELAY
-    //rgbVal color = makeRGBVal(r, g, b);
     rgbVal *pixels;
     pixels = malloc(sizeof(rgbVal) * 1);
     pixels[0] = makeRGBVal(r, g, b);

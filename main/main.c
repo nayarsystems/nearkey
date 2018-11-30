@@ -37,6 +37,8 @@
 #include "utils.h"
 #include "boards.h"
 #include "hwrtc.h"
+#include "ws2812.h"
+
 
 // Magic info
 #define STR_HELPER(x) #x
@@ -2029,10 +2031,24 @@ static int get_reset_button() {
 #endif
 }
 
+static void rgb_led(int r, int g, int b) {
+#ifdef CONFIG_VK_BOARD_REMOTSY_DEVRELAY
+    //rgbVal color = makeRGBVal(r, g, b);
+    rgbVal *pixels;
+    pixels = malloc(sizeof(rgbVal) * 1);
+    pixels[0] = makeRGBVal(r, g, b);
+    ws2812_setColors(1, pixels);
+#endif
+}
+
 void app_main(void) {
     char chbuf[65];
     bool status_led = false;
     size_t olen;
+
+#ifdef CONFIG_VK_BOARD_REMOTSY_DEVRELAY
+    ws2812_init(12);
+#endif
 
     // Setup Watch Dog
     ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
@@ -2134,10 +2150,13 @@ void app_main(void) {
         // Status LED
         if (get_reset_button() == 0 && reset_button_tm > 0){ // LED On
             status_led = true;
+	    rgb_led(200,0,0);
         } else if ((get_reset_button() == 0 && reset_button_tm == 0) || (!is_configured())) { // LED Blink
             status_led = !status_led;
+	    rgb_led(0,0,200);
         } else {
             status_led = false;
+	    rgb_led(0,0,0);
         }
         set_status_led(status_led);
         // --- End Status LED

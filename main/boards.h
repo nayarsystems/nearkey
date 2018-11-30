@@ -54,8 +54,9 @@
     #define ACTUATORS_GPIO {27}
     #define ACTUATORS_TOUT {10}
     #define RESET_BUTTON_GPIO 0
+    #define NEOPIXEL_GPIO 12
+    #define NEOPIXEL_GRB
 #endif
-
 
 // TTGO MINI 32
 #ifdef CONFIG_VK_BOARD_TTGO_MINI_32

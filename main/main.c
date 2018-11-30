@@ -37,6 +37,7 @@
 #include "utils.h"
 #include "boards.h"
 #include "hwrtc.h"
+#include "neopixel.h"
 
 // Magic info
 #define STR_HELPER(x) #x
@@ -2023,6 +2024,12 @@ static void setup_gpio() {
         assert(ret == ESP_OK);
     #endif
 
+    // Setup Neopixel
+    #ifdef NEOPIXEL_GPIO
+        neopixel_init();
+        neopixel_set(0, 0, 0);
+    #endif    
+
     reset_button_tm = RESET_BUTTON_TIME;
 }
 
@@ -2102,8 +2109,8 @@ void app_main(void) {
     memcpy(gatts_cfg.service_uuid128, def_srv, sizeof(gatts_cfg.service_uuid128));
     memcpy(gatts_cfg.characteristic_uuid_128, def_char, sizeof(gatts_cfg.characteristic_uuid_128));
     ESP_ERROR_CHECK(init_gatts(&gatts_cfg));
-
     adv_enable_tm = 5;
+
     while(1) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
         while(!xSemaphoreTake(session_sem, portMAX_DELAY));
@@ -2153,10 +2160,19 @@ void app_main(void) {
         // Status LED
         if (get_reset_button() == 0 && reset_button_tm > 0){ // LED On
             status_led = true;
+            #ifdef NEOPIXEL_GPIO
+            neopixel_set(200, 0, 0);
+            #endif
         } else if ((get_reset_button() == 0 && reset_button_tm == 0) || (!is_configured())) { // LED Blink
             status_led = !status_led;
+            #ifdef NEOPIXEL_GPIO
+            neopixel_set(0, 0, status_led ? 200:0);
+            #endif
         } else {
             status_led = false;
+            #ifdef NEOPIXEL_GPIO
+            neopixel_set(0, 0, 0);
+            #endif
         }
         set_status_led(status_led);
         // --- End Status LED

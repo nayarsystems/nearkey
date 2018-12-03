@@ -2035,7 +2035,11 @@ static void setup_gpio() {
 
 static void set_status_led(int st) {
 #ifdef STATUS_LED_GPIO
-    gpio_set_level(STATUS_LED_GPIO, st);
+    #ifdef STATUS_LED_INVERT
+        gpio_set_level(STATUS_LED_GPIO, !st);
+    #else
+        gpio_set_level(STATUS_LED_GPIO, st);
+    #endif
 #endif
 }
 
@@ -2051,7 +2055,7 @@ static int get_reset_button() {
 #ifdef RESET_BUTTON_GPIO    
     return gpio_get_level(RESET_BUTTON_GPIO);
 #else
-    return 1
+    return 1;
 #endif
 }
 

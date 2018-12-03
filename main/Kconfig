@@ -71,6 +71,15 @@ choice
             GPIO 18 -> Actuator 2 (Relay 3)
             GPIO 19 -> Actuator 3 (Relay 4)
             https://www.iotflair.com/projects
+    config VK_BOARD_ROBOTELECTRONICS_ESP32LR20
+        bool "ROBOT ELECTRONICS ESP32LR20"
+        help
+            Selects Robot electronics ESP32LR20 board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 23 -> Status LED (board led) (invert)
+            GPIO 33 -> Actuator 0 (Relay 1)
+            GPIO 25 -> Actuator 1 (Relay 2)
+            https://robot-electronics.co.uk/esp32lr20.html
     config VK_BOARD_TTGO_MINI_32
         bool "TTGO MINI 32"
         help

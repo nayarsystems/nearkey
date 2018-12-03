@@ -58,6 +58,16 @@
     #define NEOPIXEL_GRB
 #endif
 
+// IOT Flair 4Relay
+#ifdef CONFIG_VK_BOARD_IOTFLAIR_4RELAY
+    #define HW_BOARD "IOTFLAIR_4RELAY"
+    #define ACTUATORS_GPIO {21, 22, 18, 19}
+    #define ACTUATORS_TOUT {10, 10, 10, 10}
+    #define STATUS_LED_GPIO 15
+    #define RESET_BUTTON_GPIO 4
+#endif
+
+
 // TTGO MINI 32
 #ifdef CONFIG_VK_BOARD_TTGO_MINI_32
     #define HW_BOARD "TTGO_MINI_32"

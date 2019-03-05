@@ -4,6 +4,13 @@ choice
     prompt "Board"
     help
         Selects Virkey target board.
+    config VK_BOARD_MINI_V1
+        bool "MINI V1"
+        help
+            Selects Mini Virkey V1 board.
+            GPIO 0  <- Factory reset / Boot loader
+            GPIO 5  -> Neopixel GRB
+            GPIO 18 -> Actuator 0 (Relay 1)
     config VK_BOARD_VK1X
         bool "VIRKEY VK1X"
         help

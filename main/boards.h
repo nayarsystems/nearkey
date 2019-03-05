@@ -2,6 +2,18 @@
 
 #include "sdkconfig.h"
 
+
+// MINI-1R
+#ifdef CONFIG_VK_BOARD_MINI_V1
+    #define HW_BOARD "REMOTSY_DEVRELAY"
+    #define ACTUATORS_GPIO {18}
+    #define ACTUATORS_TOUT {10}
+    #define RESET_BUTTON_GPIO 0
+    #define NEOPIXEL_GPIO 5
+    #define NEOPIXEL_GRB
+#endif
+
+
 // VK1X
 #ifdef CONFIG_VK_BOARD_VK1X
     #define HW_BOARD "VK1X"

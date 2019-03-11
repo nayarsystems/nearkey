@@ -5,7 +5,7 @@
 
 // MINI-1R
 #ifdef CONFIG_VK_BOARD_MINI_V1
-    #define HW_BOARD "REMOTSY_DEVRELAY"
+    #define HW_BOARD "MINI_V1"
     #define ACTUATORS_GPIO {18}
     #define ACTUATORS_TOUT {10}
     #define RESET_BUTTON_GPIO 0

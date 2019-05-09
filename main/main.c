@@ -1,5 +1,5 @@
 #define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
-#define FW_VER 50
+#define FW_VER 51
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -16,6 +16,7 @@
 #include "cwpack_util.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "driver/periph_ctrl.h"
 #include "esp_task_wdt.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
@@ -271,6 +272,13 @@ static uint32_t reset_button_tm;
 static uint32_t adv_enable_tm;
 static time_t adv_watchdog;
 // --- End Advertising enable timer
+
+// Scheduled reboot (Dirty hack)
+#ifndef SCHED_RESET
+#define SCHED_RESET (24 * 3600 * 10) // One day
+#endif
+static int32_t sched_reset_counter = SCHED_RESET;
+
 
 // Function declarations
 static int reset_flash_config(bool);
@@ -2059,6 +2067,13 @@ static int get_reset_button() {
 #endif
 }
 
+void reset_hardware_modules(void) {
+	// Reset all problematic hardware modules after soft reboot
+	periph_module_reset(PERIPH_RMT_MODULE);
+	periph_module_reset(PERIPH_BT_MODULE);
+}
+
+
 void app_main(void) {
     char chbuf[65];
     bool status_led = false;
@@ -2068,6 +2083,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_task_wdt_init(20, true));
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     ESP_ERROR_CHECK(esp_task_wdt_reset());
+
+    reset_hardware_modules();
 
     session_sem = xSemaphoreCreateMutex();
     xSemaphoreGive(session_sem);
@@ -2121,6 +2138,14 @@ void app_main(void) {
 
         // Feed Watch Dog
         ESP_ERROR_CHECK(esp_task_wdt_reset());
+
+        // Scheduled reset
+        if (SCHED_RESET > 0) {
+            sched_reset_counter --;
+            if (sched_reset_counter == 0) {
+                reboot();
+            }
+        }
 
         // Update actuators
         for (int act = 0; act < MAX_ACTUATORS; act ++){

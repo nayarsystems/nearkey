@@ -1,5 +1,5 @@
 #define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
-#define FW_VER 51
+#define FW_VER 52
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -275,7 +275,7 @@ static time_t adv_watchdog;
 
 // Scheduled reboot (Dirty hack)
 #ifndef SCHED_RESET
-#define SCHED_RESET (24 * 3600 * 10) // One day
+#define SCHED_RESET (3 * 24 * 3600 * 10) // 3 days
 #endif
 static int32_t sched_reset_counter = SCHED_RESET;
 
@@ -2140,7 +2140,7 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
 
         // Scheduled reset
-        if (SCHED_RESET > 0) {
+        if (SCHED_RESET > 0 && !ota.start) {
             sched_reset_counter --;
             if (sched_reset_counter == 0) {
                 reboot();

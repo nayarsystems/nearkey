@@ -1,5 +1,5 @@
 #define CA_PK "IIR7tWMp+VW9CZI3M7Q3TR4izhjOv96MsvhxKjd6wUQ="
-#define FW_VER 52
+#define FW_VER 53
 #define PRODUCT "VIRKEY"
 #define LOG_TAG "MAIN"
 
@@ -2140,12 +2140,12 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
 
         // Scheduled reset
-        if (SCHED_RESET > 0 && !ota.start) {
-            sched_reset_counter --;
-            if (sched_reset_counter == 0) {
-                reboot();
-            }
-        }
+        //if (SCHED_RESET > 0 && !ota.start) {
+        //    sched_reset_counter --;
+        //    if (sched_reset_counter == 0) {
+        //        reboot();
+        //    }
+        //}
 
         // Update actuators
         for (int act = 0; act < MAX_ACTUATORS; act ++){

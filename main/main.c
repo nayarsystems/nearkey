@@ -277,7 +277,7 @@ static time_t adv_watchdog;
 #ifndef SCHED_RESET
 #define SCHED_RESET (3 * 24 * 3600 * 10) // 3 days
 #endif
-static int32_t sched_reset_counter = SCHED_RESET;
+// static int32_t sched_reset_counter = SCHED_RESET;
 
 
 // Function declarations

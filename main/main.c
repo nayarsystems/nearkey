@@ -2052,8 +2052,12 @@ static void set_actuator(int act, int st) {
 }
 
 static int get_reset_button() {
-#ifdef RESET_BUTTON_GPIO    
+#ifdef RESET_BUTTON_GPIO
+#ifdef INVERT_RESET_BUTTON
+    return !gpio_get_level(RESET_BUTTON_GPIO);
+#else    
     return gpio_get_level(RESET_BUTTON_GPIO);
+#endif
 #else
     return 1;
 #endif

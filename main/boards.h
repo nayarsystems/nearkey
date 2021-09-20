@@ -13,6 +13,16 @@
     #define NEOPIXEL_GRB
 #endif
 
+// ADAM12R
+#ifdef CONFIG_VK_BOARD_ADAM12R
+    #define HW_BOARD "ADAM12R"
+    #define ACTUATORS_GPIO {2, 4, 5, 12, 13, 14, 15, 18, 19, 21, 22, 23}
+    #define ACTUATORS_TOUT {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10}
+    #define INVERT_RESET_BUTTON
+    #define RESET_BUTTON_GPIO 36
+    #define STATUS_LED_GPIO 27
+    #define BUZZER_GPIO 25
+#endif
 
 // VK1X
 #ifdef CONFIG_VK_BOARD_VK1X

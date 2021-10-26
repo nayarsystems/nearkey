@@ -16,18 +16,18 @@ choice
         help
             Selects Mini Virkey ADAM12R board.
             GPIO 36 <- Factory reset
-            GPIO 2  -> Actuator 0 (Relay 1)
-            GPIO 4  -> Actuator 1 (Relay 2)
-            GPIO 5  -> Actuator 2 (Relay 3)
-            GPIO 12 -> Actuator 3 (Relay 4)
-            GPIO 13 -> Actuator 4 (Relay 5)
-            GPIO 14 -> Actuator 5 (Relay 6)
-            GPIO 15 -> ACTUATOR 6 (Relay 7)
-            GPIO 18 -> Actuator 7 (Relay 8)
-            GPIO 19 -> Actuator 8 (Relay 9)
-            GPIO 21 -> Actuator 9 (Relay 10)
-            GPIO 22 -> Actuator 10 (Relay 11)
-            GPIO 23 -> Actuator 11 (Relay 12)
+            GPIO 23 -> Actuator 0 (Relay 1)
+            GPIO 22 -> Actuator 1 (Relay 2)
+            GPIO 21 -> Actuator 2 (Relay 3)
+            GPIO 19 -> Actuator 3 (Relay 4)
+            GPIO 18 -> Actuator 4 (Relay 5)
+            GPIO 15 -> Actuator 5 (Relay 6)
+            GPIO 14 -> ACTUATOR 6 (Relay 7)
+            GPIO 13 -> Actuator 7 (Relay 8)
+            GPIO 12 -> Actuator 8 (Relay 9)
+            GPIO 5  -> Actuator 9 (Relay 10)
+            GPIO 4  -> Actuator 10 (Relay 11)
+            GPIO 2  -> Actuator 11 (Relay 12)
             GPIO 25 -> Buzzer
             GPIO 27 -> Status led
     config VK_BOARD_VK1X

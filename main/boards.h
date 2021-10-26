@@ -1,7 +1,6 @@
+// clang-format off
 #pragma once 
-
 #include "sdkconfig.h"
-
 
 // MINI-1R
 #ifdef CONFIG_VK_BOARD_MINI_V1
@@ -16,7 +15,7 @@
 // ADAM12R
 #ifdef CONFIG_VK_BOARD_ADAM12R
     #define HW_BOARD "ADAM12R"
-    #define ACTUATORS_GPIO {2, 4, 5, 12, 13, 14, 15, 18, 19, 21, 22, 23}
+    #define ACTUATORS_GPIO {23, 22, 21, 19, 18, 15, 14, 13, 12, 5, 4, 2}
     #define ACTUATORS_TOUT {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10}
     #define INVERT_RESET_BUTTON
     #define RESET_BUTTON_GPIO 36

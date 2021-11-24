@@ -1,0 +1,18 @@
+---
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: Cpp11
+AllowShortBlocksOnASingleLine: 'false'
+AllowShortFunctionsOnASingleLine: 'None'
+ColumnLimit: '120'
+IndentWidth: '4'
+ContinuationIndentWidth: '4'
+TabWidth: '4'
+SortIncludes: 'false'
+SpaceAfterCStyleCast: 'true'
+SpaceBeforeAssignmentOperators: 'true'
+UseTab: ForIndentation
+MaxEmptyLinesToKeep: 1
+ForEachMacros: ['DL_FOREACH', 'DL_FOREACH_SAFE', 'LL_FOREACH', 'LL_FOREACH_SAFE']
+BreakBeforeBraces: 'Attach'
+...
